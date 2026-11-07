@@ -6,4 +6,6 @@ export PATH="$HOME/.local/bin:$PATH"
 export GDK_RENDERING=similar
 export PYTHONDONTWRITEBYTECODE=1
 
-exec python3 -B "$SCRIPT_DIR/docupad.py" "$@"
+PY_BIN="/usr/bin/python3"
+[ -x "$PY_BIN" ] || PY_BIN="python3"
+exec "$PY_BIN" -B "$SCRIPT_DIR/docupad.py" "$@"

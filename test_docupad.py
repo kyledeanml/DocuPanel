@@ -49,6 +49,28 @@ class TestDocumentParserAndOutline(unittest.TestCase):
         self.assertIn("<th>Name</th>", html_out)
         self.assertIn("<td>Engineer</td>", html_out)
 
+    def test_docx_zlib_compressed_extraction(self):
+        import zipfile
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:body>'
+            b'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Resume Title</w:t></w:r></w:p>'
+            b'<w:p><w:r><w:t>Body paragraph text.</w:t></w:r></w:p>'
+            b'</w:body></w:document>'
+        )
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("word/document.xml", xml)
+            extracted = DocumentParser.extract_docx_text(tmp_path)
+            self.assertIn("# Resume Title", extracted)
+            self.assertIn("Body paragraph text.", extracted)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 class TestViewerAndAssets(unittest.TestCase):
     """Test DocViewer configuration, style scheme, and SVG/desktop assets."""

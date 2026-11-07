@@ -166,7 +166,7 @@ class DocumentParser:
 
     @staticmethod
     def extract_docx_text(file_path: str) -> str:
-        """Extract readable paragraphs from a Microsoft Word (.docx) archive."""
+        """Extract readable paragraphs and headings from a Microsoft Word (.docx) archive."""
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
                 if "word/document.xml" not in zf.namelist():
@@ -178,8 +178,24 @@ class DocumentParser:
                 tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
                 if tag == "p":
                     txt = "".join(elem.itertext()).strip()
-                    if txt:
-                        paragraphs.append(txt)
+                    if not txt:
+                        continue
+                    prefix = ""
+                    for child in elem.iter():
+                        ctag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                        if ctag == "pStyle":
+                            for k, v in child.attrib.items():
+                                if k.endswith("val"):
+                                    low = v.lower()
+                                    if low == "title":
+                                        prefix = "# "
+                                    elif low == "subtitle":
+                                        prefix = "## "
+                                    elif low.startswith("heading"):
+                                        num = "".join(ch for ch in low if ch.isdigit())
+                                        lvl = min(6, max(1, int(num))) if num else 2
+                                        prefix = "#" * lvl + " "
+                    paragraphs.append(f"{prefix}{txt}")
             return "\n\n".join(paragraphs) if paragraphs else "[Empty DOCX Document]"
         except Exception as e:
             return f"[Error reading DOCX document: {e}]"
