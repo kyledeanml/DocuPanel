@@ -235,7 +235,15 @@ class DocViewer(Gtk.Box):
     def _setup_signals(self):
         self.source_buffer.connect("changed", self._on_buffer_changed)
         self.source_buffer.connect("notify::cursor-position", self._on_cursor_moved)
-        self.source_view.connect("scroll-event", self._on_scroll_event)
+
+        scroll_mask = Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK
+        for w in (self, self.scrolled_source, self.source_view, self.scrolled_rendered, self.scrolled_pdf):
+            w.add_events(scroll_mask)
+            w.connect("scroll-event", self._on_scroll_event)
+        if HAS_WEBKIT and self.web_view is not None:
+            self.web_view.add_events(scroll_mask)
+            self.web_view.connect("scroll-event", self._on_scroll_event)
+
         self.source_view.connect_after("draw", self._on_draw_watermark)
 
     @classmethod
@@ -299,8 +307,7 @@ class DocViewer(Gtk.Box):
         self.emit("cursor-moved", line, col)
 
     def _on_scroll_event(self, widget, event):
-        state = event.state & Gtk.accelerator_get_default_mod_mask()
-        if state == Gdk.ModifierType.CONTROL_MASK:
+        if event.state & Gdk.ModifierType.CONTROL_MASK:
             if event.direction == Gdk.ScrollDirection.UP:
                 self.zoom_in()
                 return True
@@ -309,10 +316,10 @@ class DocViewer(Gtk.Box):
                 return True
             elif event.direction == Gdk.ScrollDirection.SMOOTH:
                 _, dy = event.get_scroll_deltas()
-                if dy < 0:
+                if dy < -0.01:
                     self.zoom_in()
                     return True
-                elif dy > 0:
+                elif dy > 0.01:
                     self.zoom_out()
                     return True
         return False
