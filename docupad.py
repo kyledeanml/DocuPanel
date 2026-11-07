@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-DocPad - DocumentViewer & Markdown/PDF/Text Companion Application
+DocuPad - DocumentViewer & Markdown/PDF/Text Companion Application
 With Retina Vision, Dark Neon Blue Theme, Table of Contents Outline Sidebar,
-Rendered HTML & PDF Page Canvas, and Translucent DocPad Yoga-Pad Watermark.
+Rendered HTML & PDF Page Canvas, and Translucent DocuPad Yoga-Pad Watermark.
 Designed for Linux Mint Cinnamon alongside PythonPad.
 """
 
@@ -24,10 +24,10 @@ from search_bar import SearchBar
 from doc_tools import DocumentParser
 
 
-class DocPadWindow(Gtk.ApplicationWindow):
-    """Main application window for DocPad."""
+class DocuPadWindow(Gtk.ApplicationWindow):
+    """Main application window for DocuPad."""
 
-    APP_NAME = "DocPad"
+    APP_NAME = "DocuPad"
     APP_VERSION = "2.1"
 
     def __init__(self, app, initial_files=None):
@@ -37,8 +37,8 @@ class DocPadWindow(Gtk.ApplicationWindow):
         self._stats_timeout_id = None
 
         # Set application & window icon for Cinnamon panel, alt-tab, and taskbar
-        self.set_wmclass("docpad", "DocPad")
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docpad.svg")
+        self.set_wmclass("docupad", "DocuPad")
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docupad.svg")
         if os.path.exists(icon_path):
             try:
                 Gtk.Window.set_default_icon_from_file(icon_path)
@@ -56,7 +56,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
         settings = Gtk.Settings.get_default()
         if settings:
             settings.set_property("gtk-application-prefer-dark-theme", True)
-        self.current_theme = "docpad-neon"
+        self.current_theme = "docupad-neon"
         self._apply_dark_neon_theme()
 
         # UI Construction
@@ -77,7 +77,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
         self.search_bar.set_reveal_child(False)
 
     def _apply_dark_neon_theme(self):
-        """Apply sleek dark mode CSS with white text and neon blue accents across DocPad."""
+        """Apply sleek dark mode CSS with white text and neon blue accents across DocuPad."""
         styles_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles")
         if os.path.exists(styles_dir):
             GtkSource.StyleSchemeManager.get_default().prepend_search_path(styles_dir)
@@ -270,7 +270,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
         # Right Controls: Menu, Search, Line Numbers, Retina Zoom
         btn_menu = Gtk.MenuButton()
         btn_menu.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
-        btn_menu.set_tooltip_text("DocPad Options & Companion Tools")
+        btn_menu.set_tooltip_text("DocuPad Options & Companion Tools")
         btn_menu.set_popover(self._build_menu_popover(btn_menu))
         hb.pack_end(btn_menu)
 
@@ -351,7 +351,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
 
         vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 4)
 
-        btn_about = Gtk.ModelButton(label="About DocPad")
+        btn_about = Gtk.ModelButton(label="About DocuPad")
         btn_about.connect("clicked", lambda b: (popover.popdown(), self.on_about()))
         vbox.pack_start(btn_about, False, False, 0)
 
@@ -686,7 +686,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
     # --------------------------------------------------------------------------
     def on_open(self):
         dialog = Gtk.FileChooserDialog(
-            title="Open Document in DocPad",
+            title="Open Document in DocuPad",
             parent=self,
             action=Gtk.FileChooserAction.OPEN
         )
@@ -878,7 +878,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
             "Retina Document Viewer & Reader Companion for PythonPad.\n"
             "Supports Markdown, PDF, reStructuredText, HTML, ODT, DOCX, CSV/TSV, JSON, and Text."
         )
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docpad.svg")
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docupad.svg")
         if os.path.exists(icon_path):
             try:
                 dialog.set_logo(GdkPixbuf.Pixbuf.new_from_file_at_scale(icon_path, 96, 96, True))
@@ -893,7 +893,7 @@ class DocPadWindow(Gtk.ApplicationWindow):
             flags=0,
             message_type=Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.OK,
-            text="DocPad Error"
+            text="DocuPad Error"
         )
         dialog.format_secondary_text(str(msg))
         dialog.run()
@@ -960,28 +960,28 @@ class DocPadWindow(Gtk.ApplicationWindow):
         return False
 
 
-class DocPadApp(Gtk.Application):
+class DocuPadApp(Gtk.Application):
     def __init__(self):
         super().__init__(
-            application_id="org.linuxmint.docpad",
+            application_id="org.linuxmint.docupad",
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.NON_UNIQUE
         )
         self.files_to_open = []
 
     def do_activate(self):
-        win = DocPadWindow(self, initial_files=self.files_to_open)
+        win = DocuPadWindow(self, initial_files=self.files_to_open)
         win.present()
 
     def do_open(self, files, n_files, hint):
         paths = [f.get_path() for f in files if f.get_path()]
-        win = DocPadWindow(self, initial_files=paths)
+        win = DocuPadWindow(self, initial_files=paths)
         win.present()
 
 
 def main():
-    GLib.set_prgname("docpad")
-    GLib.set_application_name("DocPad")
-    app = DocPadApp()
+    GLib.set_prgname("docupad")
+    GLib.set_application_name("DocuPad")
+    app = DocuPadApp()
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
         app.files_to_open = [os.path.abspath(f) for f in sys.argv[1:]]
     return app.run(sys.argv)

@@ -1,7 +1,7 @@
-# DocPad
+# DocuPad
 
 <p align="center">
-  <img src="docpad.svg" alt="DocPad Logo" width="160" height="160">
+  <img src="docupad.svg" alt="DocuPad Logo" width="160" height="160">
 </p>
 
 A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application** with **Retina Vision** (HiDPI dynamic font scaling and subpixel anti-aliasing), **Document Outline Sidebar**, **Rendered Reader View & Source View**, **Multi-Tab Document Browsing**, and a translucent darker-blue open book and document watermark resting on an unassuming yoga pad. Built natively for **Linux Mint Cinnamon** using Python 3, GTK 3, GtkSourceView 4, and WebKit2.
@@ -13,7 +13,7 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 ### Multi-Format Document Viewing & Rendering
 - **Rendered Reader View (`F6` / `Ctrl + P`)**: View Markdown (`.md`), reStructuredText (`.rst`), HTML (`.html`), CSV/TSV tables (`.csv`, `.tsv`), ODT (`.odt`), and DOCX (`.docx`) rendered with clean dark-neon typography, formatted tables, blockquotes, and code blocks.
 - **High-DPI PDF Page Viewer (`.pdf`)**: Inspect PDF documents with crisp page-by-page rasterization (`pdftoppm`), zoom scaling, and instant text extraction (`pdftotext`) in Source View.
-- **Source & Text View**: Inspect or edit the underlying document source with syntax highlighting, line numbers, and the translucent DocPad yoga-pad watermark.
+- **Source & Text View**: Inspect or edit the underlying document source with syntax highlighting, line numbers, and the translucent DocuPad yoga-pad watermark.
 - **Read-Only Lock (`Ctrl + R`)**: Toggle read-only mode anytime to prevent accidental edits while reading documentation.
 
 ### Document Outline & Table of Contents Sidebar
@@ -22,7 +22,7 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 
 ### Companion Integration with PythonPad
 - **Open in PythonPad**: Launch the current file directly in PythonPad from *Menu -> Open in PythonPad...*
-- **Unified Dark Mode & Neon Blue Aesthetic**: Matches PythonPad's dark slate UI (`#0b0f19`), crisp white text, neon cyan/blue accents (`docpad-neon`), and translucent yoga-pad emblem (`docpad.svg`).
+- **Unified Dark Mode & Neon Blue Aesthetic**: Matches PythonPad's dark slate UI (`#0b0f19`), crisp white text, neon cyan/blue accents (`docupad-neon`), and translucent yoga-pad emblem (`docupad.svg`).
 
 ### Retina Vision & Navigation
 - **Dynamic Retina Zooming**: Scale both Rendered Reader View, PDF pages, and Source View fluidly from **50% up to 300%** using `Ctrl + +`, `Ctrl + -`, `Ctrl + 0`, or **`Ctrl + Mouse Wheel`**.
@@ -38,10 +38,10 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 ```
 
 The installer automatically:
-- Installs the vector icon (`docpad.svg`) and multi-size panel icon set (`16x16` through `512x512`) into `~/.local/share/icons/hicolor/`.
-- Installs the desktop launcher (`~/.local/share/applications/docpad.desktop`) with `StartupWMClass=docpad`.
-- Creates the CLI command symlink at `~/.local/bin/docpad`.
-- Registers DocPad as the default viewer for `.md` and `.rst` files and pins DocPad to your Cinnamon Menu favorites.
+- Installs the vector icon (`docupad.svg`) and multi-size panel icon set (`16x16` through `512x512`) into `~/.local/share/icons/hicolor/`.
+- Installs the desktop launcher (`~/.local/share/applications/docupad.desktop`) with `StartupWMClass=docupad`.
+- Creates the CLI command symlink at `~/.local/bin/docupad`.
+- Registers DocuPad as the default viewer for `.md` and `.rst` files and pins DocuPad to your Cinnamon Menu favorites.
 
 ---
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-DocPad - Document Viewer & Editor Component
+DocuPad - Document Viewer & Editor Component
 Provides a Retina-optimized multi-mode document viewer (Rendered HTML/PDF View + Source View)
-with the translucent DocPad watermark (darker-blue open book & document on an unassuming yoga pad).
+with the translucent DocuPad watermark (darker-blue open book & document on an unassuming yoga pad).
 """
 
 import os
@@ -40,7 +40,7 @@ if os.path.exists(_styles_dir):
 class DocViewer(Gtk.Box):
     """
     Multi-mode document viewer and editor widget with:
-    - Source / Text View (GtkSourceView 4 with translucent DocPad watermark)
+    - Source / Text View (GtkSourceView 4 with translucent DocuPad watermark)
     - Rendered Document View (WebKit2 HTML preview for Markdown/RST/HTML/CSV or PDF Page Canvas)
     - Dynamic Retina Zooming (50% to 300%)
     """
@@ -132,7 +132,7 @@ class DocViewer(Gtk.Box):
         self._setup_signals()
 
         self.apply_retina_font()
-        self.set_theme("docpad-neon")
+        self.set_theme("docupad-neon")
 
         self.show_all()
         self.view_stack.set_visible_child_name("source")
@@ -248,10 +248,10 @@ class DocViewer(Gtk.Box):
 
     @classmethod
     def _get_watermark_pixbuf(cls):
-        """Load and cache the official DocPad SVG (translucent blue open tome & doc on yoga pad)."""
+        """Load and cache the official DocuPad SVG (translucent blue open tome & doc on yoga pad)."""
         if not cls._watermark_loaded:
             cls._watermark_loaded = True
-            svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docpad.svg")
+            svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docupad.svg")
             if os.path.exists(svg_path):
                 try:
                     cls._watermark_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
@@ -439,7 +439,7 @@ class DocViewer(Gtk.Box):
         manager = GtkSource.StyleSchemeManager.get_default()
         scheme = manager.get_scheme(scheme_id)
         if scheme is None:
-            for fallback in ("docpad-neon", "oblivion", "solarized-dark", "classic"):
+            for fallback in ("docupad-neon", "oblivion", "solarized-dark", "classic"):
                 scheme = manager.get_scheme(fallback)
                 if scheme:
                     break
@@ -576,7 +576,7 @@ class DocViewer(Gtk.Box):
 
         target_dir = os.path.dirname(abs_target) or "."
         if os.access(target_dir, os.W_OK) and not os.path.islink(abs_target):
-            fd, tmp_path = tempfile.mkstemp(prefix=".docpad_save_", dir=target_dir)
+            fd, tmp_path = tempfile.mkstemp(prefix=".docupad_save_", dir=target_dir)
             try:
                 with os.fdopen(fd, "wb") as f:
                     f.write(encoded_bytes)

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<style-scheme id="docpad-neon" _name="DocPad Neon Blue &amp; White" version="1.0">
-  <author>DocPad</author>
+<style-scheme id="docupad-neon" _name="DocuPad Neon Blue &amp; White" version="1.0">
+  <author>DocuPad</author>
   <_description>Dark mode document viewer theme with crisp white text and neon blue accents</_description>
 
   <!-- Palette -->

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DocPad - Document Parsers, Outline Extractor, and PDF Renderer
+DocuPad - Document Parsers, Outline Extractor, and PDF Renderer
 Provides high-DPI PDF page rasterization via pdftoppm, PDF text extraction via pdftotext,
 ODT/DOCX XML paragraph extraction, CSV/TSV table formatting, and TOC heading extraction.
 """
@@ -30,7 +30,7 @@ class HeadingItem:
 
 
 class DocumentParser:
-    """Parses structured and rich document formats into clean text and outlines for DocPad."""
+    """Parses structured and rich document formats into clean text and outlines for DocuPad."""
 
     PDF_EXTENSIONS = {".pdf"}
     MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd"}
@@ -518,7 +518,7 @@ class PDFPageRenderer:
 
     def __init__(self, pdf_path: Optional[str] = None):
         self.pdf_path = pdf_path
-        self.temp_dir = tempfile.mkdtemp(prefix="docpad_pdf_")
+        self.temp_dir = tempfile.mkdtemp(prefix="docupad_pdf_")
         self.page_count = 0
         if pdf_path:
             self.load_pdf(pdf_path)
