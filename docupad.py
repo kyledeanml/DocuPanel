@@ -65,6 +65,8 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         self._build_status_bar()
         self._setup_shortcuts()
 
+        self.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        self.connect("scroll-event", self._on_window_scroll_event)
         self.connect("delete-event", self._on_delete_event)
 
         if initial_files:
@@ -75,6 +77,12 @@ class DocuPadWindow(Gtk.ApplicationWindow):
 
         self.show_all()
         self.search_bar.set_reveal_child(False)
+
+    def _on_window_scroll_event(self, widget, event):
+        viewer = self.get_current_viewer()
+        if viewer is not None:
+            return viewer._on_scroll_event(widget, event)
+        return False
 
     def _apply_dark_neon_theme(self):
         """Apply sleek dark mode CSS with white text and neon blue accents across DocuPad."""

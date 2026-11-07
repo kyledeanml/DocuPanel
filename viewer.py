@@ -81,6 +81,8 @@ class DocViewer(Gtk.Box):
         self.base_font_family = "Monospace"
         self.base_font_size = 11
         self.zoom_index = self.DEFAULT_ZOOM_INDEX
+        self._last_scroll_zoom_time = 0
+        self._font_css_provider = None
 
         # PDF state
         self.pdf_renderer = None
@@ -103,16 +105,17 @@ class DocViewer(Gtk.Box):
         self.scrolled_source.add(self.source_view)
         self.view_stack.add_named(self.scrolled_source, "source")
 
-        # 2. Rendered Document View (WebKit2 or rich fallback TextView)
-        self.scrolled_rendered = Gtk.ScrolledWindow()
-        self.scrolled_rendered.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        # 2. Rendered Document View (WebKit2 directly in Stack, or fallback TextView in ScrolledWindow)
+        self.scrolled_rendered = None
         if HAS_WEBKIT:
             self.web_view = WebKit2.WebView()
             rgba = Gdk.RGBA(0.039, 0.055, 0.102, 1.0)
             self.web_view.set_background_color(rgba)
-            self.scrolled_rendered.add(self.web_view)
+            self.view_stack.add_named(self.web_view, "rendered")
         else:
             self.web_view = None
+            self.scrolled_rendered = Gtk.ScrolledWindow()
+            self.scrolled_rendered.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
             self.fallback_preview = Gtk.TextView()
             self.fallback_preview.set_editable(False)
             self.fallback_preview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -121,7 +124,7 @@ class DocViewer(Gtk.Box):
             self.fallback_preview.set_top_margin(18)
             self.fallback_preview.set_bottom_margin(18)
             self.scrolled_rendered.add(self.fallback_preview)
-        self.view_stack.add_named(self.scrolled_rendered, "rendered")
+            self.view_stack.add_named(self.scrolled_rendered, "rendered")
 
         # 3. PDF Page Canvas View
         self._build_pdf_view()
@@ -237,33 +240,50 @@ class DocViewer(Gtk.Box):
         self.source_buffer.connect("notify::cursor-position", self._on_cursor_moved)
 
         scroll_mask = Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK
-        for w in (self, self.scrolled_source, self.source_view, self.scrolled_rendered, self.scrolled_pdf):
+        targets = [self, self.scrolled_source, self.source_view, self.scrolled_pdf]
+        if self.scrolled_rendered is not None:
+            targets.append(self.scrolled_rendered)
+        if hasattr(self, "fallback_preview") and self.fallback_preview is not None:
+            targets.append(self.fallback_preview)
+
+        for w in targets:
             w.add_events(scroll_mask)
             w.connect("scroll-event", self._on_scroll_event)
+
         if HAS_WEBKIT and self.web_view is not None:
             self.web_view.add_events(scroll_mask)
+            self.web_view.connect("event", self._on_webkit_event)
             self.web_view.connect("scroll-event", self._on_scroll_event)
 
         self.source_view.connect_after("draw", self._on_draw_watermark)
 
     @classmethod
-    def _get_watermark_pixbuf(cls):
+    def _get_watermark_pixbuf(cls, size: int = 340):
         """Load and cache the official DocuPad SVG (translucent blue open tome & doc on yoga pad)."""
-        if not cls._watermark_loaded:
-            cls._watermark_loaded = True
-            svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docupad.svg")
-            if os.path.exists(svg_path):
-                try:
-                    cls._watermark_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                        svg_path, 340, 340, True
-                    )
-                except Exception:
-                    cls._watermark_pixbuf = None
-        return cls._watermark_pixbuf
+        svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docupad.svg")
+        if size == 340:
+            if not cls._watermark_loaded:
+                cls._watermark_loaded = True
+                if os.path.exists(svg_path):
+                    try:
+                        cls._watermark_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                            svg_path, 340, 340, True
+                        )
+                    except Exception:
+                        cls._watermark_pixbuf = None
+            return cls._watermark_pixbuf
+        if os.path.exists(svg_path):
+            try:
+                return GdkPixbuf.Pixbuf.new_from_file_at_scale(svg_path, size, size, True)
+            except Exception:
+                return cls._watermark_pixbuf
+        return None
 
     def _on_draw_watermark(self, widget, cr):
         """Render the translucent darker-blue open book & document resting on a yoga pad."""
-        pixbuf = self._get_watermark_pixbuf()
+        scale = self.ZOOM_STEPS[self.zoom_index]
+        target_sz = max(140, min(680, int(round(340 * scale))))
+        pixbuf = self._get_watermark_pixbuf(target_sz)
         if pixbuf is None:
             return False
 
@@ -306,22 +326,49 @@ class DocViewer(Gtk.Box):
         line, col = self.get_cursor_position()
         self.emit("cursor-moved", line, col)
 
+    def _on_webkit_event(self, widget, event):
+        if event.type == Gdk.EventType.SCROLL:
+            return self._on_scroll_event(widget, event)
+        return False
+
     def _on_scroll_event(self, widget, event):
-        if event.state & Gdk.ModifierType.CONTROL_MASK:
-            if event.direction == Gdk.ScrollDirection.UP:
-                self.zoom_in()
-                return True
-            elif event.direction == Gdk.ScrollDirection.DOWN:
-                self.zoom_out()
-                return True
-            elif event.direction == Gdk.ScrollDirection.SMOOTH:
-                _, dy = event.get_scroll_deltas()
-                if dy < -0.01:
+        state = getattr(event, "state", 0)
+        if not state and hasattr(event, "get_state"):
+            ok, st = event.get_state()
+            if ok:
+                state = st
+        if state & Gdk.ModifierType.CONTROL_MASK:
+            ev_time = getattr(event, "time", 0)
+            direction = getattr(event, "direction", None)
+            if direction is None and hasattr(event, "get_scroll_direction"):
+                ok_d, d = event.get_scroll_direction()
+                if ok_d:
+                    direction = d
+
+            if direction == Gdk.ScrollDirection.UP:
+                if not ev_time or ev_time != self._last_scroll_zoom_time:
+                    self._last_scroll_zoom_time = ev_time
                     self.zoom_in()
+                return True
+            elif direction == Gdk.ScrollDirection.DOWN:
+                if not ev_time or ev_time != self._last_scroll_zoom_time:
+                    self._last_scroll_zoom_time = ev_time
+                    self.zoom_out()
+                return True
+            elif direction == Gdk.ScrollDirection.SMOOTH:
+                res = event.get_scroll_deltas() if hasattr(event, "get_scroll_deltas") else ()
+                dy = res[-1] if res else getattr(event, "delta_y", 0.0)
+                if dy < -0.01:
+                    if not ev_time or ev_time != self._last_scroll_zoom_time:
+                        self._last_scroll_zoom_time = ev_time
+                        self.zoom_in()
                     return True
                 elif dy > 0.01:
-                    self.zoom_out()
+                    if not ev_time or ev_time != self._last_scroll_zoom_time:
+                        self._last_scroll_zoom_time = ev_time
+                        self.zoom_out()
                     return True
+                return True
         return False
 
     # --------------------------------------------------------------------------
@@ -408,15 +455,44 @@ class DocViewer(Gtk.Box):
 
     def apply_retina_font(self):
         scale = self.ZOOM_STEPS[self.zoom_index]
-        scaled_size_pt = self.base_font_size * scale
+        scaled_size_pt = max(6.0, self.base_font_size * scale)
 
         font_desc = Pango.FontDescription()
         font_desc.set_family(self.base_font_family)
         font_desc.set_size(int(scaled_size_pt * Pango.SCALE))
         self.source_view.override_font(font_desc)
 
+        try:
+            if self._font_css_provider is None:
+                self._font_css_provider = Gtk.CssProvider()
+                self.source_view.get_style_context().add_provider(
+                    self._font_css_provider,
+                    Gtk.STYLE_PROVIDER_PRIORITY_USER
+                )
+            css_str = (
+                f"textview, textview text {{ "
+                f"font-family: \"{self.base_font_family}\", monospace; "
+                f"font-size: {scaled_size_pt:.1f}pt; "
+                f"}}"
+            )
+            self._font_css_provider.load_from_data(css_str.encode("utf-8"))
+        except Exception:
+            pass
+
+        self.source_view.queue_draw()
+
         if HAS_WEBKIT and self.web_view is not None:
             self.web_view.set_zoom_level(scale)
+            try:
+                self.web_view.run_javascript(
+                    f"if (document.body) document.body.style.zoom = '{scale}';",
+                    None, None, None
+                )
+            except Exception:
+                pass
+        elif hasattr(self, "fallback_preview") and self.fallback_preview is not None:
+            self.fallback_preview.override_font(font_desc)
+
         if self.get_view_mode() == "pdf":
             self._refresh_pdf_page()
 

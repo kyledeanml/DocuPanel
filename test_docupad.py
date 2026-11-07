@@ -62,6 +62,37 @@ class TestViewerAndAssets(unittest.TestCase):
         self.assertEqual(steps[DocViewer.DEFAULT_ZOOM_INDEX], 1.00)
         self.assertTrue(all(steps[i] < steps[i + 1] for i in range(len(steps) - 1)))
 
+    def test_ctrl_mouse_wheel_scroll_zoom(self):
+        from gi.repository import Gdk
+        dummy = type("DummyViewer", (), {
+            "_last_scroll_zoom_time": 0,
+            "zoomed": [],
+            "zoom_in": lambda self: self.zoomed.append("in"),
+            "zoom_out": lambda self: self.zoomed.append("out"),
+        })()
+
+        # Test SMOOTH scroll up (3-tuple from get_scroll_deltas)
+        ev_up = Gdk.Event.new(Gdk.EventType.SCROLL)
+        ev_up.scroll.direction = Gdk.ScrollDirection.SMOOTH
+        ev_up.scroll.state = Gdk.ModifierType.CONTROL_MASK
+        ev_up.scroll.delta_y = -1.0
+        ev_up.scroll.time = 101
+        self.assertTrue(DocViewer._on_scroll_event(dummy, None, ev_up))
+        self.assertEqual(dummy.zoomed, ["in"])
+
+        # Duplicate event with identical X11 timestamp should be deduplicated
+        self.assertTrue(DocViewer._on_scroll_event(dummy, None, ev_up))
+        self.assertEqual(dummy.zoomed, ["in"])
+
+        # Test SMOOTH scroll down
+        ev_down = Gdk.Event.new(Gdk.EventType.SCROLL)
+        ev_down.scroll.direction = Gdk.ScrollDirection.SMOOTH
+        ev_down.scroll.state = Gdk.ModifierType.CONTROL_MASK
+        ev_down.scroll.delta_y = 1.0
+        ev_down.scroll.time = 102
+        self.assertTrue(DocViewer._on_scroll_event(dummy, None, ev_down))
+        self.assertEqual(dummy.zoomed, ["in", "out"])
+
     def test_docupad_scheme_available(self):
         manager = GtkSource.StyleSchemeManager.get_default()
         self.assertIn("docupad-neon", manager.get_scheme_ids())
