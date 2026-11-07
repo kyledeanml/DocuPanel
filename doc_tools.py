@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""
+DocPad - Document Parsers, Outline Extractor, and PDF Renderer
+Provides high-DPI PDF page rasterization via pdftoppm, PDF text extraction via pdftotext,
+ODT/DOCX XML paragraph extraction, CSV/TSV table formatting, and TOC heading extraction.
+"""
+
+import csv
+import html
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+
+@dataclass
+class HeadingItem:
+    """Represents a navigable section heading or page marker in the document outline."""
+    title: str
+    line: int
+    level: int = 1
+    page: int = 0
+
+
+class DocumentParser:
+    """Parses structured and rich document formats into clean text and outlines for DocPad."""
+
+    PDF_EXTENSIONS = {".pdf"}
+    MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd"}
+    RST_EXTENSIONS = {".rst", ".rest"}
+    HTML_EXTENSIONS = {".html", ".htm", ".xhtml"}
+    JSON_EXTENSIONS = {".json", ".jsonl"}
+    CSV_EXTENSIONS = {".csv", ".tsv"}
+    ODT_EXTENSIONS = {".odt"}
+    DOCX_EXTENSIONS = {".docx"}
+    XML_EXTENSIONS = {".xml", ".svg", ".plist"}
+
+    @classmethod
+    def get_doc_type(cls, file_path: Optional[str]) -> str:
+        if not file_path:
+            return "markdown"
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in cls.PDF_EXTENSIONS:
+            return "pdf"
+        if ext in cls.MARKDOWN_EXTENSIONS:
+            return "markdown"
+        if ext in cls.RST_EXTENSIONS:
+            return "rst"
+        if ext in cls.HTML_EXTENSIONS:
+            return "html"
+        if ext in cls.JSON_EXTENSIONS:
+            return "json"
+        if ext in cls.CSV_EXTENSIONS:
+            return "csv"
+        if ext in cls.ODT_EXTENSIONS:
+            return "odt"
+        if ext in cls.DOCX_EXTENSIONS:
+            return "docx"
+        if ext in cls.XML_EXTENSIONS:
+            return "xml"
+        return "text"
+
+    @classmethod
+    def load_document_text(cls, file_path: str) -> Tuple[str, str, str]:
+        """
+        Loads a file into readable text.
+        Returns (text_content, encoding_label, doc_type).
+        """
+        doc_type = cls.get_doc_type(file_path)
+
+        if doc_type == "pdf":
+            text = cls.extract_pdf_text(file_path)
+            return text, "PDF", "pdf"
+
+        if doc_type == "odt":
+            text = cls.extract_odt_text(file_path)
+            return text, "ODT (XML)", "odt"
+
+        if doc_type == "docx":
+            text = cls.extract_docx_text(file_path)
+            return text, "DOCX (XML)", "docx"
+
+        raw_bytes = b""
+        with open(file_path, "rb") as f:
+            raw_bytes = f.read()
+
+        had_nulls = b"\x00" in raw_bytes
+        encoding = "UTF-8"
+        text = None
+        for enc in ("utf-8", "latin-1", "cp1252"):
+            try:
+                text = raw_bytes.decode(enc)
+                encoding = enc.upper()
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if text is None:
+            text = raw_bytes.decode("utf-8", errors="replace")
+            encoding = "UTF-8 (lossy)"
+
+        if had_nulls:
+            text = text.replace("\x00", "\ufffd")
+            if "lossy" not in encoding.lower():
+                encoding = f"{encoding} (binary)"
+
+        text = text.replace("\r\n", "\n")
+
+        if doc_type == "json" and file_path.lower().endswith(".json"):
+            try:
+                parsed = json.loads(text)
+                text = json.dumps(parsed, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        return text, encoding, doc_type
+
+    @staticmethod
+    def extract_pdf_text(file_path: str) -> str:
+        """Extract text from a PDF file using pdftotext if available."""
+        if shutil.which("pdftotext"):
+            try:
+                proc = subprocess.run(
+                    ["pdftotext", "-layout", "--", os.path.abspath(file_path), "-"],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=20,
+                    check=False
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.replace("\x00", "\ufffd")
+            except Exception:
+                pass
+        return f"[PDF Document: {os.path.basename(file_path)}]\nSwitch to Rendered View to inspect PDF pages."
+
+    @staticmethod
+    def extract_odt_text(file_path: str) -> str:
+        """Extract readable paragraphs and headings from an OpenDocument Text (.odt) archive."""
+        try:
+            with zipfile.ZipFile(file_path, "r") as zf:
+                if "content.xml" not in zf.namelist():
+                    return f"[Invalid ODT file: {os.path.basename(file_path)}]"
+                xml_bytes = zf.read("content.xml")
+            root = ET.fromstring(xml_bytes)
+            paragraphs = []
+            for elem in root.iter():
+                tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                if tag in ("h", "p"):
+                    txt = "".join(elem.itertext()).strip()
+                    if txt:
+                        if tag == "h":
+                            paragraphs.append(f"## {txt}")
+                        else:
+                            paragraphs.append(txt)
+            return "\n\n".join(paragraphs) if paragraphs else "[Empty ODT Document]"
+        except Exception as e:
+            return f"[Error reading ODT document: {e}]"
+
+    @staticmethod
+    def extract_docx_text(file_path: str) -> str:
+        """Extract readable paragraphs from a Microsoft Word (.docx) archive."""
+        try:
+            with zipfile.ZipFile(file_path, "r") as zf:
+                if "word/document.xml" not in zf.namelist():
+                    return f"[Invalid DOCX file: {os.path.basename(file_path)}]"
+                xml_bytes = zf.read("word/document.xml")
+            root = ET.fromstring(xml_bytes)
+            paragraphs = []
+            for elem in root.iter():
+                tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                if tag == "p":
+                    txt = "".join(elem.itertext()).strip()
+                    if txt:
+                        paragraphs.append(txt)
+            return "\n\n".join(paragraphs) if paragraphs else "[Empty DOCX Document]"
+        except Exception as e:
+            return f"[Error reading DOCX document: {e}]"
+
+    @classmethod
+    def extract_outline(cls, text: str, doc_type: str = "markdown", pdf_page_count: int = 0) -> List[HeadingItem]:
+        """Extract Table of Contents / Outline headings from document content."""
+        items: List[HeadingItem] = []
+
+        if doc_type == "pdf" and pdf_page_count > 0:
+            pages = text.split("\x0c")
+            for idx in range(pdf_page_count):
+                snippet = ""
+                if idx < len(pages):
+                    for line in pages[idx].splitlines():
+                        s = line.strip()
+                        if len(s) >= 3:
+                            snippet = f" — {s[:42]}"
+                            break
+                items.append(HeadingItem(title=f"Page {idx + 1}{snippet}", line=1, level=1, page=idx + 1))
+            return items
+
+        lines = text.splitlines()
+        in_code_block = False
+
+        for idx, raw_line in enumerate(lines, start=1):
+            stripped = raw_line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                continue
+
+            # Markdown ATX headings (# Heading)
+            m_md = re.match(r"^(#{1,6})\s+(.+?)\s*#*$", stripped)
+            if m_md:
+                level = len(m_md.group(1))
+                title = m_md.group(2).strip()
+                items.append(HeadingItem(title=title, line=idx, level=level))
+                continue
+
+            # reStructuredText / Setext underlined headings
+            if idx > 1 and stripped and len(stripped) >= 3 and all(c in "=-~^\"`+*" for c in stripped) and len(set(stripped)) == 1:
+                prev = lines[idx - 2].strip()
+                if prev and not prev.startswith("#"):
+                    ch = stripped[0]
+                    level = 1 if ch in ("=", "*") else (2 if ch in ("-", "~") else 3)
+                    items.append(HeadingItem(title=prev, line=idx - 1, level=level))
+                    continue
+
+            # HTML headings (<h1>...</h1>)
+            if doc_type == "html":
+                m_html = re.search(r"<h([1-6])[^>]*>(.*?)</h\1>", stripped, re.IGNORECASE)
+                if m_html:
+                    level = int(m_html.group(1))
+                    clean_title = re.sub(r"<[^>]+>", "", m_html.group(2)).strip()
+                    if clean_title:
+                        items.append(HeadingItem(title=html.unescape(clean_title), line=idx, level=level))
+                    continue
+
+            # JSON top-level keys
+            if doc_type == "json":
+                m_json = re.match(r'^  "([^"]+)"\s*:', raw_line)
+                if m_json:
+                    items.append(HeadingItem(title=m_json.group(1), line=idx, level=1))
+
+        # Fallback for plain text documents: detectnumbered or ALL-CAPS section headers
+        if not items:
+            for idx, raw_line in enumerate(lines, start=1):
+                s = raw_line.strip()
+                if re.match(r"^(\d+\.|\bSECTION\b|\bCHAPTER\b|\bPART\b)\s+[A-Z]", s):
+                    items.append(HeadingItem(title=s[:60], line=idx, level=1))
+
+        return items
+
+    @classmethod
+    def render_markdown_to_html(cls, text: str, doc_type: str = "markdown", file_path: Optional[str] = None) -> str:
+        """Convert Markdown, RST, CSV, JSON, or plain text into styled dark-neon HTML for rich reading."""
+        if doc_type == "html":
+            return text
+
+        if doc_type == "csv":
+            body_html = cls._csv_to_html_table(text, file_path)
+        elif doc_type == "json":
+            body_html = f"<pre class='code-block'><code>{html.escape(text)}</code></pre>"
+        else:
+            body_html = cls._markdown_to_html_body(text)
+
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {{
+    color-scheme: dark;
+  }}
+  body {{
+    background-color: #0a0e1a;
+    color: #f8fafc;
+    font-family: 'Inter', 'Ubuntu', 'DejaVu Sans', sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 32px 40px 64px 40px;
+  }}
+  h1, h2, h3, h4, h5, h6 {{
+    color: #00f0ff;
+    font-weight: 700;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    letter-spacing: 0.2px;
+  }}
+  h1 {{
+    font-size: 2.0em;
+    border-bottom: 1px solid rgba(0, 240, 255, 0.35);
+    padding-bottom: 0.3em;
+  }}
+  h2 {{
+    font-size: 1.5em;
+    color: #38bdf8;
+    border-bottom: 1px solid rgba(56, 189, 248, 0.22);
+    padding-bottom: 0.25em;
+  }}
+  h3 {{
+    font-size: 1.25em;
+    color: #7dd3fc;
+  }}
+  p {{
+    margin: 0.85em 0;
+  }}
+  a {{
+    color: #00f0ff;
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(0, 240, 255, 0.5);
+  }}
+  code {{
+    font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
+    background-color: #111c33;
+    color: #38bdf8;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }}
+  pre.code-block {{
+    background-color: #070a14;
+    border: 1px solid rgba(0, 240, 255, 0.28);
+    border-left: 3px solid #00f0ff;
+    border-radius: 8px;
+    padding: 14px 18px;
+    overflow-x: auto;
+  }}
+  pre.code-block code {{
+    background: transparent;
+    color: #f0f9ff;
+    padding: 0;
+  }}
+  blockquote {{
+    margin: 1em 0;
+    padding: 10px 18px;
+    background-color: rgba(17, 28, 51, 0.7);
+    border-left: 4px solid #38bdf8;
+    color: #bae6fd;
+    border-radius: 0 6px 6px 0;
+  }}
+  table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.2em 0;
+    background-color: #0d1324;
+    border: 1px solid rgba(0, 240, 255, 0.25);
+  }}
+  th, td {{
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    padding: 8px 12px;
+    text-align: left;
+  }}
+  th {{
+    background-color: #111c33;
+    color: #00f0ff;
+    font-weight: 700;
+  }}
+  tr:nth-child(even) {{
+    background-color: #0b1020;
+  }}
+  hr {{
+    border: none;
+    border-top: 1px solid rgba(0, 240, 255, 0.3);
+    margin: 2em 0;
+  }}
+  ul, ol {{
+    padding-left: 1.6em;
+  }}
+  li {{
+    margin: 0.35em 0;
+  }}
+</style>
+</head>
+<body>
+{body_html}
+</body>
+</html>"""
+
+    @classmethod
+    def _csv_to_html_table(cls, text: str, file_path: Optional[str] = None) -> str:
+        delimiter = "\t" if (file_path and file_path.lower().endswith(".tsv")) else ","
+        reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+        rows = list(reader)
+        if not rows:
+            return "<p><em>Empty table</em></p>"
+        out = ["<table>"]
+        header = rows[0]
+        out.append("<thead><tr>" + "".join(f"<th>{html.escape(c)}</th>" for c in header) + "</tr></thead>")
+        out.append("<tbody>")
+        for r in rows[1:500]:
+            out.append("<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in r) + "</tr>")
+        out.append("</tbody></table>")
+        return "\n".join(out)
+
+    @classmethod
+    def _markdown_to_html_body(cls, text: str) -> str:
+        lines = text.splitlines()
+        out: List[str] = []
+        in_code = False
+        in_ul = False
+        in_ol = False
+        in_table = False
+
+        def close_lists():
+            nonlocal in_ul, in_ol, in_table
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+            if in_ol:
+                out.append("</ol>")
+                in_ol = False
+            if in_table:
+                out.append("</tbody></table>")
+                in_table = False
+
+        def format_inline(s: str) -> str:
+            escaped = html.escape(s)
+            escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+            escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+            escaped = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", escaped)
+            escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', escaped)
+            return escaped
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                close_lists()
+                if not in_code:
+                    in_code = True
+                    out.append("<pre class='code-block'><code>")
+                else:
+                    in_code = False
+                    out.append("</code></pre>")
+                continue
+
+            if in_code:
+                out.append(html.escape(line))
+                continue
+
+            if not stripped:
+                close_lists()
+                continue
+
+            # Horizontal rule
+            if re.match(r"^([-*_])\1{2,}$", stripped):
+                close_lists()
+                out.append("<hr>")
+                continue
+
+            # Headings
+            m_h = re.match(r"^(#{1,6})\s+(.+?)\s*#*$", stripped)
+            if m_h:
+                close_lists()
+                lvl = len(m_h.group(1))
+                out.append(f"<h{lvl}>{format_inline(m_h.group(2))}</h{lvl}>")
+                continue
+
+            # Markdown table row
+            if stripped.startswith("|") and stripped.endswith("|") and len(stripped) > 2:
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                if all(re.match(r"^:?-+:?$", c) for c in cells if c):
+                    continue
+                if not in_table:
+                    close_lists()
+                    in_table = True
+                    out.append("<table><thead><tr>" + "".join(f"<th>{format_inline(c)}</th>" for c in cells) + "</tr></thead><tbody>")
+                else:
+                    out.append("<tr>" + "".join(f"<td>{format_inline(c)}</td>" for c in cells) + "</tr>")
+                continue
+
+            # Blockquote
+            if stripped.startswith(">"):
+                close_lists()
+                q = stripped.lstrip(">").strip()
+                out.append(f"<blockquote>{format_inline(q)}</blockquote>")
+                continue
+
+            # Unordered list
+            m_ul = re.match(r"^[-*+]\s+(.+)$", stripped)
+            if m_ul:
+                if in_ol or in_table:
+                    close_lists()
+                if not in_ul:
+                    in_ul = True
+                    out.append("<ul>")
+                out.append(f"<li>{format_inline(m_ul.group(1))}</li>")
+                continue
+
+            # Ordered list
+            m_ol = re.match(r"^\d+\.\s+(.+)$", stripped)
+            if m_ol:
+                if in_ul or in_table:
+                    close_lists()
+                if not in_ol:
+                    in_ol = True
+                    out.append("<ol>")
+                out.append(f"<li>{format_inline(m_ol.group(1))}</li>")
+                continue
+
+            close_lists()
+            out.append(f"<p>{format_inline(stripped)}</p>")
+
+        if in_code:
+            out.append("</code></pre>")
+        close_lists()
+        return "\n".join(out)
+
+
+class PDFPageRenderer:
+    """Renders PDF pages to PNG files on demand using pdftoppm."""
+
+    def __init__(self, pdf_path: Optional[str] = None):
+        self.pdf_path = pdf_path
+        self.temp_dir = tempfile.mkdtemp(prefix="docpad_pdf_")
+        self.page_count = 0
+        if pdf_path:
+            self.load_pdf(pdf_path)
+
+    def load_pdf(self, pdf_path: str) -> int:
+        self.pdf_path = os.path.abspath(pdf_path)
+        self.page_count = self._detect_page_count(self.pdf_path)
+        return self.page_count
+
+    @staticmethod
+    def _detect_page_count(pdf_path: str) -> int:
+        if not os.path.isfile(pdf_path):
+            return 0
+        if shutil.which("pdfinfo"):
+            try:
+                proc = subprocess.run(
+                    ["pdfinfo", "--", pdf_path],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=10,
+                    check=False
+                )
+                for line in proc.stdout.splitlines():
+                    if line.lower().startswith("pages:"):
+                        return max(1, int(line.split(":", 1)[1].strip()))
+            except Exception:
+                pass
+        # Fallback: count form-feeds in pdftotext
+        if shutil.which("pdftotext"):
+            try:
+                proc = subprocess.run(
+                    ["pdftotext", "--", pdf_path, "-"],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=15,
+                    check=False
+                )
+                if proc.returncode == 0:
+                    return max(1, proc.stdout.count("\x0c"))
+            except Exception:
+                pass
+        return 1
+
+    def render_page_png(self, page_num: int, dpi: int = 150) -> Optional[str]:
+        """Render 1-based page_num at the given DPI and return the PNG file path."""
+        if not self.pdf_path or not os.path.isfile(self.pdf_path) or not shutil.which("pdftoppm"):
+            return None
+        page_num = max(1, min(page_num, max(1, self.page_count)))
+        out_prefix = os.path.join(self.temp_dir, f"page_{page_num}_{dpi}")
+        expected_png = f"{out_prefix}.png"
+        if os.path.isfile(expected_png):
+            return expected_png
+        try:
+            subprocess.run(
+                [
+                    "pdftoppm",
+                    "-png",
+                    "-r", str(dpi),
+                    "-f", str(page_num),
+                    "-l", str(page_num),
+                    "-singlefile",
+                    "--",
+                    self.pdf_path,
+                    out_prefix,
+                ],
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+            if os.path.isfile(expected_png):
+                return expected_png
+        except Exception:
+            pass
+        return None
+
+    def cleanup(self):
+        if self.temp_dir and os.path.isdir(self.temp_dir):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)

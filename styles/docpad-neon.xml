@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<style-scheme id="docpad-neon" _name="DocPad Neon Blue &amp; White" version="1.0">
+  <author>DocPad</author>
+  <_description>Dark mode document viewer theme with crisp white text and neon blue accents</_description>
+
+  <!-- Palette -->
+  <color name="bg_deep"       value="#0a0e1a"/>
+  <color name="bg_gutter"     value="#070a14"/>
+  <color name="bg_current"    value="#111c33"/>
+  <color name="bg_selection"  value="#0284c7"/>
+  <color name="white_pure"    value="#ffffff"/>
+  <color name="ice_white"     value="#f0f9ff"/>
+  <color name="neon_cyan"     value="#00f0ff"/>
+  <color name="neon_blue"     value="#38bdf8"/>
+  <color name="electric_blue" value="#60a5fa"/>
+  <color name="sky_soft"      value="#93c5fd"/>
+  <color name="muted_blue"    value="#64748b"/>
+  <color name="violet_glow"   value="#c084fc"/>
+  <color name="rose_err"      value="#f43f5e"/>
+
+  <!-- Global Settings -->
+  <style name="text"                        foreground="white_pure" background="bg_deep"/>
+  <style name="selection"                   foreground="white_pure" background="bg_selection"/>
+  <style name="cursor"                      foreground="neon_cyan"/>
+  <style name="secondary-cursor"            foreground="neon_blue"/>
+  <style name="current-line"                background="bg_current"/>
+  <style name="current-line-number"         foreground="neon_cyan" background="bg_current" bold="true"/>
+  <style name="line-numbers"                foreground="muted_blue" background="bg_gutter"/>
+  <style name="draw-spaces"                 foreground="muted_blue"/>
+  <style name="background-pattern"          background="bg_deep"/>
+  <style name="bracket-match"               foreground="neon_cyan" background="bg_current" bold="true"/>
+  <style name="bracket-mismatch"            foreground="white_pure" background="rose_err" bold="true"/>
+  <style name="search-match"                foreground="bg_deep" background="neon_cyan" bold="true"/>
+
+  <!-- Syntax & Document Highlighting -->
+  <style name="def:comment"                 foreground="muted_blue" italic="true"/>
+  <style name="def:shebang"                 foreground="muted_blue" bold="true"/>
+  <style name="def:doc-comment-element"     foreground="sky_soft" italic="true"/>
+  <style name="def:constant"                foreground="neon_cyan"/>
+  <style name="def:string"                  foreground="sky_soft"/>
+  <style name="def:special-char"            foreground="neon_cyan" bold="true"/>
+  <style name="def:number"                  foreground="neon_cyan"/>
+  <style name="def:floating-point"          foreground="neon_cyan"/>
+  <style name="def:boolean"                 foreground="neon_cyan" bold="true"/>
+  <style name="def:keyword"                 foreground="neon_blue" bold="true"/>
+  <style name="def:statement"               foreground="neon_blue" bold="true"/>
+  <style name="def:type"                    foreground="electric_blue" bold="true"/>
+  <style name="def:function"                foreground="ice_white" bold="true"/>
+  <style name="def:identifier"              foreground="white_pure"/>
+  <style name="def:preprocessor"            foreground="violet_glow"/>
+  <style name="def:Heading"                 foreground="neon_cyan" bold="true"/>
+  <style name="def:link-text"               foreground="neon_blue" underline="single"/>
+  <style name="def:link-destination"        foreground="sky_soft" italic="true"/>
+  <style name="def:emphasis"                foreground="ice_white" italic="true"/>
+  <style name="def:strong-emphasis"         foreground="neon_cyan" bold="true"/>
+  <style name="def:inline-code"             foreground="neon_blue"/>
+  <style name="def:error"                   foreground="white_pure" background="rose_err" bold="true"/>
+</style-scheme>

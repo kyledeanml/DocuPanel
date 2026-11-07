@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Darker Traditional Royal/Cobalt Blue Gradient (Left Open Book Page & Binding) -->
+    <linearGradient id="docDarkBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#387eb8" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#1e4263" stop-opacity="0.62"/>
+    </linearGradient>
+
+    <!-- Deeper Indigo-Blue Gradient (Right Open Book Page & Document Sheet) -->
+    <linearGradient id="docDeepBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2b6496" stop-opacity="0.66"/>
+      <stop offset="100%" stop-color="#15314b" stop-opacity="0.56"/>
+    </linearGradient>
+
+    <!-- Unassuming Matte Yoga Pad Surface Gradient -->
+    <linearGradient id="yogaMatTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22436d" stop-opacity="0.58"/>
+      <stop offset="100%" stop-color="#152943" stop-opacity="0.50"/>
+    </linearGradient>
+
+    <!-- Yoga Pad Rolled End Gradient -->
+    <linearGradient id="yogaRoll" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2d578b" stop-opacity="0.68"/>
+      <stop offset="100%" stop-color="#13253d" stop-opacity="0.58"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Unassuming Yoga Pad / Mat in Perspective -->
+  <g transform="translate(26, 62) scale(1.28)">
+    <!-- Subtle floor shadow beneath the yoga pad -->
+    <path d="M 48 258 L 288 258 L 328 214 L 92 214 Z"
+          fill="#060c17" fill-opacity="0.45"/>
+
+    <!-- Yoga Pad Thickness / Bottom Edge -->
+    <path d="M 44 248 L 282 248 L 322 204 L 322 211 L 282 255 L 44 255 Z"
+          fill="#1b3556" fill-opacity="0.65"
+          stroke="#387eb8" stroke-width="1.2" stroke-opacity="0.55" stroke-linejoin="round"/>
+
+    <!-- Yoga Pad Main Flat Surface -->
+    <path d="M 44 248 L 282 248 L 322 204 L 88 204 Z"
+          fill="url(#yogaMatTop)"
+          stroke="#387eb8" stroke-width="1.5" stroke-opacity="0.60" stroke-linejoin="round"/>
+
+    <!-- Subtle Non-Slip Texture Lines & Center Alignment Line on the Yoga Pad -->
+    <line x1="70" y1="226" x2="298" y2="226"
+          stroke="#5ba4e5" stroke-width="1.1" stroke-opacity="0.38" stroke-dasharray="6,5"/>
+    <line x1="176" y1="207" x2="152" y2="245"
+          stroke="#5ba4e5" stroke-width="1.0" stroke-opacity="0.32"/>
+
+    <!-- Rolled-Up End of the Yoga Pad (Left Side Cylinder) -->
+    <path d="M 38 236 C 34 236 31 240 31 245 C 31 250 34 254 38 254 L 82 208 C 78 208 75 204 75 199 C 75 194 78 190 82 190 Z"
+          fill="url(#yogaRoll)"
+          stroke="#387eb8" stroke-width="1.3" stroke-opacity="0.62"/>
+
+    <!-- Yoga Pad Roll Spiral End-Cap -->
+    <ellipse cx="40" cy="245" rx="7.5" ry="9.5"
+             fill="#152943" fill-opacity="0.72"
+             stroke="#4b91d1" stroke-width="1.3" stroke-opacity="0.65"/>
+    <path d="M 40 241 C 42 241 43 243 43 245 C 43 247 41 249 39 249 C 37 249 36 246 37 244"
+          fill="none" stroke="#63b3ed" stroke-width="1.1" stroke-opacity="0.60" stroke-linecap="round"/>
+
+    <!-- Soft Contact Shadow Where the Document Tome Rests on the Yoga Pad -->
+    <ellipse cx="182" cy="226" rx="68" ry="13"
+             fill="#07111f" fill-opacity="0.58"/>
+  </g>
+
+  <!-- Translucent Darker-Blue Open Document Folio & Folded Page Sitting on the Yoga Pad -->
+  <g transform="translate(116, 86) scale(1.45)">
+    <!-- Back Floating Document Sheet with Folded Corner -->
+    <path d="M 60 14 L 146 14 L 172 40 L 172 146 C 172 152 167 157 161 157 L 60 157 C 54 157 49 152 49 146 L 49 25 C 49 19 54 14 60 14 Z"
+          fill="url(#docDeepBlue)"
+          stroke="#5ba4e5" stroke-width="1.4" stroke-opacity="0.62" stroke-linejoin="round"/>
+    <!-- Folded Dog-Ear Corner -->
+    <path d="M 146 14 L 146 40 L 172 40 Z"
+          fill="#387eb8" fill-opacity="0.65"
+          stroke="#7dd3fc" stroke-width="1.2" stroke-opacity="0.68" stroke-linejoin="round"/>
+
+    <!-- Foreground Open Reading Book / Document Spread Resting on the Pad -->
+    <!-- Left Page -->
+    <path d="M 18 68 C 46 62 76 68 98 80 L 98 176 C 76 164 46 158 18 164 Z"
+          fill="url(#docDarkBlue)"
+          stroke="#63b3ed" stroke-width="1.5" stroke-opacity="0.72" stroke-linejoin="round"/>
+    <!-- Right Page -->
+    <path d="M 178 68 C 150 62 120 68 98 80 L 98 176 C 120 164 150 158 178 164 Z"
+          fill="url(#docDeepBlue)"
+          stroke="#4b91d1" stroke-width="1.5" stroke-opacity="0.68" stroke-linejoin="round"/>
+
+    <!-- Center Spine & Bookmark Ribbon -->
+    <line x1="98" y1="80" x2="98" y2="177"
+          stroke="#7dd3fc" stroke-width="2.0" stroke-opacity="0.72" stroke-linecap="round"/>
+    <path d="M 94 166 L 94 192 L 98 186 L 102 192 L 102 166 Z"
+          fill="#38bdf8" fill-opacity="0.65"
+          stroke="#bae6fd" stroke-width="0.9" stroke-opacity="0.70"/>
+
+    <!-- Crisp Translucent Typography Lines on Left Page -->
+    <line x1="32" y1="90"  x2="78" y2="94"  stroke="#bae6fd" stroke-width="2.6" stroke-opacity="0.68" stroke-linecap="round"/>
+    <line x1="32" y1="104" x2="84" y2="109" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+    <line x1="32" y1="117" x2="84" y2="122" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+    <line x1="32" y1="130" x2="84" y2="135" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+    <line x1="32" y1="143" x2="68" y2="147" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+
+    <!-- Crisp Translucent Typography & Diagram Box on Right Page -->
+    <rect x="112" y="88" width="50" height="24" rx="3"
+          fill="#0a0e1a" fill-opacity="0.32"
+          stroke="#7dd3fc" stroke-width="1.2" stroke-opacity="0.58"/>
+    <line x1="112" y1="124" x2="162" y2="119" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+    <line x1="112" y1="137" x2="162" y2="132" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+    <line x1="112" y1="150" x2="146" y2="146" stroke="#93c5fd" stroke-width="2.0" stroke-opacity="0.54" stroke-linecap="round"/>
+  </g>
+</svg>
