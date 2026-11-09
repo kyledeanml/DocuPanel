@@ -71,6 +71,55 @@ class TestDocumentParserAndOutline(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_docx_and_odt_unzip_fallback_on_missing_zlib(self):
+        """Verify DOCX and ODT fallback to system unzip/7z when python's zipfile raises missing zlib error."""
+        from unittest.mock import patch
+        import zipfile
+        xml_docx = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:body>'
+            b'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Professional Experience</w:t></w:r></w:p>'
+            b'<w:p><w:r><w:t>Developed Linux Mint desktop applications.</w:t></w:r></w:p>'
+            b'</w:body></w:document>'
+        )
+        xml_odt = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
+            b'<office:body><office:text>'
+            b'<h>Project Overview</h>'
+            b'<p>Summary of achievements.</p>'
+            b'</office:text></office:body></office:document-content>'
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_d:
+            docx_path = tmp_d.name
+        with tempfile.NamedTemporaryFile(suffix=".odt", delete=False) as tmp_o:
+            odt_path = tmp_o.name
+
+        try:
+            with zipfile.ZipFile(docx_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("word/document.xml", xml_docx)
+            with zipfile.ZipFile(odt_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("content.xml", xml_odt)
+
+            def mock_zipfile_init(*args, **kwargs):
+                raise RuntimeError("Compression requires the (missing) zlib module")
+
+            with patch("zipfile.ZipFile", side_effect=mock_zipfile_init):
+                extracted_docx = DocumentParser.extract_docx_text(docx_path)
+                self.assertIn("## Professional Experience", extracted_docx)
+                self.assertIn("Developed Linux Mint desktop applications.", extracted_docx)
+
+                extracted_odt = DocumentParser.extract_odt_text(odt_path)
+                self.assertIn("## Project Overview", extracted_odt)
+                self.assertIn("Summary of achievements.", extracted_odt)
+        finally:
+            if os.path.exists(docx_path):
+                os.remove(docx_path)
+            if os.path.exists(odt_path):
+                os.remove(odt_path)
+
 
 class TestViewerAndAssets(unittest.TestCase):
     """Test DocViewer configuration, style scheme, and SVG/desktop assets."""
@@ -164,6 +213,61 @@ class TestViewerAndAssets(unittest.TestCase):
         self.assertGreater(pix_zoomed.get_width(), pix.get_width())
 
         renderer.cleanup()
+
+    def test_pdf_renderer_filename_with_spaces_and_sync_load(self):
+        """Test PDF with spaces in filename and ensure viewer load_file populates pixbuf immediately."""
+        import cairo
+        from doc_tools import PDFPageRenderer, PopplerBridge
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupad test spaces ")
+        pdf_path = os.path.join(tmp_dir, "Mini Book Pages - 188 x 171 With cover HR3.pdf")
+        try:
+            surf = cairo.PDFSurface(pdf_path, 300, 400)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0.1, 0.2, 0.4)
+            cr.paint()
+            cr.set_source_rgb(1.0, 1.0, 1.0)
+            cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+            cr.set_font_size(24)
+            cr.move_to(30, 80)
+            cr.show_text("Death Stranding Mini Book")
+            surf.show_page()
+            surf.finish()
+
+            # 1. Test PopplerBridge direct open with spaces
+            doc_handle = PopplerBridge.open_document(pdf_path)
+            self.assertIsNotNone(doc_handle)
+            self.assertEqual(PopplerBridge.get_page_count(doc_handle), 1)
+
+            # 2. Test PDFPageRenderer surface & pixbuf
+            renderer = PDFPageRenderer(pdf_path)
+            self.assertEqual(renderer.page_count, 1)
+            surf_rendered = renderer.render_page_surface(1, scale=1.0)
+            self.assertIsNotNone(surf_rendered)
+            pix = renderer.render_page_pixbuf(1, scale=1.0)
+            self.assertIsNotNone(pix)
+            self.assertGreater(pix.get_width(), 100)
+            renderer.cleanup()
+
+            # 3. Test DocViewer load_file populates pdf_image pixbuf when display is present
+            from gi.repository import Gtk
+            has_display, _ = Gtk.init_check()
+            if has_display:
+                viewer = DocViewer()
+                loaded = viewer.load_file(pdf_path)
+                self.assertTrue(loaded)
+                self.assertEqual(viewer.get_view_mode(), "pdf")
+                self.assertIsNotNone(viewer.pdf_image.get_pixbuf())
+                self.assertGreater(viewer.pdf_image.get_pixbuf().get_width(), 100)
+                if viewer.pdf_renderer:
+                    viewer.pdf_renderer.cleanup()
+        finally:
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                    os.rmdir(tmp_dir)
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":

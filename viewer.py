@@ -390,7 +390,8 @@ class DocViewer(Gtk.Box):
         if mode == "rendered":
             if self.doc_type == "pdf" and self.pdf_renderer and self.pdf_renderer.page_count > 0:
                 self.view_stack.set_visible_child_name("pdf")
-                self._refresh_pdf_page()
+                self._refresh_pdf_page(sync=True)
+                self.scrolled_pdf.show_all()
             else:
                 self.refresh_rendered_preview()
                 self.view_stack.set_visible_child_name("rendered")
@@ -423,15 +424,32 @@ class DocViewer(Gtk.Box):
         if new_page != self.current_pdf_page:
             self._current_pdf_pixbuf = None
         self.current_pdf_page = new_page
-        self._refresh_pdf_page()
+        self._refresh_pdf_page(sync=True)
 
-    def _refresh_pdf_page(self):
+    def _refresh_pdf_page(self, sync: bool = False):
         if not self.pdf_renderer:
             return
         scale = self.ZOOM_STEPS[self.zoom_index]
         self.lbl_pdf_page.set_text(f"Page {self.current_pdf_page} / {self.pdf_renderer.page_count}  ({int(scale*100)}%)")
         self.btn_pdf_prev.set_sensitive(self.current_pdf_page > 1)
         self.btn_pdf_next.set_sensitive(self.current_pdf_page < self.pdf_renderer.page_count)
+
+        if sync:
+            timer = getattr(self, "_pdf_debounce_timer", None)
+            if timer:
+                try:
+                    GLib.source_remove(timer)
+                except Exception:
+                    pass
+                self._pdf_debounce_timer = None
+
+            pix = self.pdf_renderer.render_page_pixbuf(self.current_pdf_page, scale)
+            if pix is not None:
+                self._current_pdf_pixbuf = pix
+                self._current_page_base_w = max(10.0, pix.get_width() / scale)
+                self._current_page_base_h = max(10.0, pix.get_height() / scale)
+                self.pdf_image.set_from_pixbuf(pix)
+            return
 
         # 1. Instant zero-latency visual scaling of existing pixbuf (1ms smooth feedback)
         if getattr(self, "_current_pdf_pixbuf", None) is not None and getattr(self, "_current_page_base_w", 0) > 0:
@@ -676,6 +694,7 @@ class DocViewer(Gtk.Box):
             self.current_pdf_page = 1
             self.set_read_only(True)
             self.set_view_mode("rendered")
+            self._refresh_pdf_page(sync=True)
         elif doc_type in ("markdown", "rst", "html", "csv", "odt", "docx"):
             if doc_type in ("odt", "docx"):
                 self.set_read_only(True)

@@ -101,7 +101,12 @@ class PopplerBridge:
     def open_document(cls, file_path: str):
         if not cls.is_available():
             return None
-        uri = "file://" + os.path.abspath(file_path)
+        abs_p = os.path.abspath(file_path)
+        try:
+            uri = GLib.filename_to_uri(abs_p, None)
+        except Exception:
+            import urllib.parse
+            uri = "file://" + urllib.parse.quote(abs_p)
         with cls._lock:
             doc = cls._lib.poppler_document_new_from_file(uri.encode("utf-8"), None, None)
         return doc
@@ -315,14 +320,54 @@ class DocumentParser:
                 pass
         return f"[PDF Document: {os.path.basename(file_path)}]\nSwitch to Rendered View to inspect PDF pages."
 
-    @staticmethod
-    def extract_odt_text(file_path: str) -> str:
-        """Extract readable paragraphs and headings from an OpenDocument Text (.odt) archive."""
+    @classmethod
+    def _read_zip_member(cls, file_path: str, member_name: str) -> Optional[bytes]:
+        """Read a file entry from a zip/odt/docx archive using zipfile with unzip/7z CLI fallbacks."""
+        # 1. Try python's built-in zipfile
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
-                if "content.xml" not in zf.namelist():
-                    return f"[Invalid ODT file: {os.path.basename(file_path)}]"
-                xml_bytes = zf.read("content.xml")
+                if member_name in zf.namelist():
+                    return zf.read(member_name)
+        except Exception:
+            pass
+
+        # 2. Fallback to system 'unzip -p'
+        if shutil.which("unzip"):
+            try:
+                proc = subprocess.run(
+                    ["unzip", "-p", "--", file_path, member_name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False
+                )
+                if proc.returncode == 0 and proc.stdout:
+                    return proc.stdout
+            except Exception:
+                pass
+
+        # 3. Fallback to system '7z e -so'
+        if shutil.which("7z"):
+            try:
+                proc = subprocess.run(
+                    ["7z", "e", "-so", "--", file_path, member_name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False
+                )
+                if proc.returncode == 0 and proc.stdout:
+                    return proc.stdout
+            except Exception:
+                pass
+
+        return None
+
+    @classmethod
+    def extract_odt_text(cls, file_path: str) -> str:
+        """Extract readable paragraphs and headings from an OpenDocument Text (.odt) archive."""
+        try:
+            xml_bytes = cls._read_zip_member(file_path, "content.xml")
+            if not xml_bytes:
+                return f"[Invalid or unreadable ODT file: {os.path.basename(file_path)}]"
             root = ET.fromstring(xml_bytes)
             paragraphs = []
             for elem in root.iter():
@@ -338,14 +383,13 @@ class DocumentParser:
         except Exception as e:
             return f"[Error reading ODT document: {e}]"
 
-    @staticmethod
-    def extract_docx_text(file_path: str) -> str:
+    @classmethod
+    def extract_docx_text(cls, file_path: str) -> str:
         """Extract readable paragraphs and headings from a Microsoft Word (.docx) archive."""
         try:
-            with zipfile.ZipFile(file_path, "r") as zf:
-                if "word/document.xml" not in zf.namelist():
-                    return f"[Invalid DOCX file: {os.path.basename(file_path)}]"
-                xml_bytes = zf.read("word/document.xml")
+            xml_bytes = cls._read_zip_member(file_path, "word/document.xml")
+            if not xml_bytes:
+                return f"[Invalid or unreadable DOCX file: {os.path.basename(file_path)}]"
             root = ET.fromstring(xml_bytes)
             paragraphs = []
             for elem in root.iter():
@@ -740,6 +784,15 @@ class PDFPageRenderer:
             return sz
         return (595.0, 842.0)
 
+    def render_page_surface(self, page_num: int, scale: float = 1.0) -> Optional[cairo.ImageSurface]:
+        """Render page_num (1-based) directly to an in-memory cairo.ImageSurface (purely CPU-bound, thread safe)."""
+        if not self.pdf_path or self.page_count == 0:
+            return None
+        page_num = max(1, min(page_num, self.page_count))
+        if self._doc_handle and PopplerBridge.is_available():
+            return PopplerBridge.render_page(self._doc_handle, page_num - 1, scale=scale * 1.333)
+        return None
+
     def render_page_pixbuf(self, page_num: int, scale: float = 1.0) -> Optional[GdkPixbuf.Pixbuf]:
         """Render page_num (1-based) to GdkPixbuf at scale factor without blocking disk operations."""
         if not self.pdf_path or self.page_count == 0:
@@ -752,12 +805,14 @@ class PDFPageRenderer:
                 return self._pixbuf_cache[cache_key]
 
         pix = None
-        if self._doc_handle and PopplerBridge.is_available():
-            surf = PopplerBridge.render_page(self._doc_handle, page_num - 1, scale=scale * 1.333)
-            if surf is not None:
-                w = surf.get_width()
-                h = surf.get_height()
+        surf = self.render_page_surface(page_num, scale)
+        if surf is not None:
+            w = surf.get_width()
+            h = surf.get_height()
+            try:
                 pix = Gdk.pixbuf_get_from_surface(surf, 0, 0, w, h)
+            except Exception:
+                pix = None
 
         if pix is None:
             # Fallback to pdftoppm
@@ -778,12 +833,54 @@ class PDFPageRenderer:
         return pix
 
     def render_page_async(self, page_num: int, scale: float, callback: Callable[[int, float, Optional[GdkPixbuf.Pixbuf]], None]):
-        """Asynchronously render page in a background thread and invoke callback(page_num, scale, pixbuf) on main loop."""
+        """Asynchronously render page in a background thread and safely create GdkPixbuf on the main GTK loop."""
+        page_num = max(1, min(page_num, self.page_count)) if self.page_count > 0 else page_num
+        scale_key = round(scale, 2)
+        cache_key = (page_num, scale_key)
+
+        with self._render_lock:
+            if cache_key in self._pixbuf_cache:
+                cached_pix = self._pixbuf_cache[cache_key]
+                GLib.idle_add(callback, page_num, scale, cached_pix)
+                return
+
         def worker():
-            pix = self.render_page_pixbuf(page_num, scale)
-            GLib.idle_add(callback, page_num, scale, pix)
+            # In background worker: render purely in memory to cairo surface
+            surf = self.render_page_surface(page_num, scale)
+
+            def _on_main_thread():
+                pix = None
+                if surf is not None:
+                    w = surf.get_width()
+                    h = surf.get_height()
+                    try:
+                        pix = Gdk.pixbuf_get_from_surface(surf, 0, 0, w, h)
+                    except Exception:
+                        pix = None
+
+                if pix is None:
+                    # Fallback to pdftoppm on main thread
+                    dpi = int(round(120 * scale))
+                    png_path = self.render_page_png(page_num, dpi=dpi)
+                    if png_path and os.path.isfile(png_path):
+                        try:
+                            pix = GdkPixbuf.Pixbuf.new_from_file(png_path)
+                        except Exception:
+                            pass
+
+                if pix is not None:
+                    with self._render_lock:
+                        if len(self._pixbuf_cache) > 16:
+                            self._pixbuf_cache.pop(next(iter(self._pixbuf_cache)))
+                        self._pixbuf_cache[cache_key] = pix
+
+                callback(page_num, scale, pix)
+                return False
+
+            GLib.idle_add(_on_main_thread)
 
         t = threading.Thread(target=worker, daemon=True)
+        t.start()
         t.start()
 
     @staticmethod
