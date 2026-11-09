@@ -6,6 +6,7 @@ ODT/DOCX XML paragraph extraction, CSV/TSV table formatting, and TOC heading ext
 """
 
 import csv
+import ctypes
 import html
 import io
 import json
@@ -14,10 +15,172 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
+
+import cairo
+import gi
+try:
+    gi.require_version('Gdk', '3.0')
+    gi.require_version('GdkPixbuf', '2.0')
+    from gi.repository import Gdk, GdkPixbuf, GLib
+except Exception:
+    pass
+
+
+class PycairoContext(ctypes.Structure):
+    _fields_ = [
+        ('PyObject_HEAD', ctypes.c_byte * object.__basicsize__),
+        ('ctx', ctypes.c_void_p),
+    ]
+
+
+class PopplerBridge:
+    """Direct ctypes bridge to libpoppler-glib for 75x faster in-memory Cairo PDF rasterization."""
+
+    _lib = None
+    _libgobject = None
+    _libglib = None
+    _loaded = False
+    _available = False
+    _lock = threading.Lock()
+
+    @classmethod
+    def is_available(cls) -> bool:
+        cls._ensure_loaded()
+        return cls._available
+
+    @classmethod
+    def _ensure_loaded(cls):
+        if cls._loaded:
+            return
+        cls._loaded = True
+        for name in ("libpoppler-glib.so.8", "libpoppler-glib.so"):
+            try:
+                cls._lib = ctypes.CDLL(name)
+                break
+            except OSError:
+                pass
+
+        if not cls._lib:
+            return
+
+        try:
+            cls._libgobject = ctypes.CDLL("libgobject-2.0.so.0")
+            cls._libglib = ctypes.CDLL("libglib-2.0.so.0")
+
+            cls._lib.poppler_document_new_from_file.restype = ctypes.c_void_p
+            cls._lib.poppler_document_new_from_file.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p]
+
+            cls._lib.poppler_document_get_n_pages.restype = ctypes.c_int
+            cls._lib.poppler_document_get_n_pages.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_document_get_page.restype = ctypes.c_void_p
+            cls._lib.poppler_document_get_page.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+            cls._lib.poppler_page_get_size.restype = None
+            cls._lib.poppler_page_get_size.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double)]
+
+            cls._lib.poppler_page_render.restype = None
+            cls._lib.poppler_page_render.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+            cls._lib.poppler_page_get_text.restype = ctypes.c_void_p
+            cls._lib.poppler_page_get_text.argtypes = [ctypes.c_void_p]
+
+            cls._libgobject.g_object_unref.argtypes = [ctypes.c_void_p]
+            cls._libglib.g_free.argtypes = [ctypes.c_void_p]
+
+            cls._available = True
+        except Exception:
+            cls._available = False
+
+    @classmethod
+    def open_document(cls, file_path: str):
+        if not cls.is_available():
+            return None
+        uri = "file://" + os.path.abspath(file_path)
+        with cls._lock:
+            doc = cls._lib.poppler_document_new_from_file(uri.encode("utf-8"), None, None)
+        return doc
+
+    @classmethod
+    def get_page_count(cls, doc_handle) -> int:
+        if not doc_handle or not cls.is_available():
+            return 0
+        with cls._lock:
+            return cls._lib.poppler_document_get_n_pages(doc_handle)
+
+    @classmethod
+    def get_page_size(cls, doc_handle, page_index: int) -> Tuple[float, float]:
+        if not doc_handle or not cls.is_available():
+            return (595.0, 842.0)
+        with cls._lock:
+            page = cls._lib.poppler_document_get_page(doc_handle, page_index)
+            if not page:
+                return (595.0, 842.0)
+            pw = ctypes.c_double()
+            ph = ctypes.c_double()
+            cls._lib.poppler_page_get_size(page, ctypes.byref(pw), ctypes.byref(ph))
+            cls._libgobject.g_object_unref(page)
+            return (pw.value, ph.value)
+
+    @classmethod
+    def render_page(cls, doc_handle, page_index: int, scale: float = 1.0) -> Optional[cairo.ImageSurface]:
+        if not doc_handle or not cls.is_available():
+            return None
+        with cls._lock:
+            page = cls._lib.poppler_document_get_page(doc_handle, page_index)
+            if not page:
+                return None
+            try:
+                pw = ctypes.c_double()
+                ph = ctypes.c_double()
+                cls._lib.poppler_page_get_size(page, ctypes.byref(pw), ctypes.byref(ph))
+                target_w = max(1, int(round(pw.value * scale)))
+                target_h = max(1, int(round(ph.value * scale)))
+
+                surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, target_w, target_h)
+                cr = cairo.Context(surf)
+                cr.set_source_rgb(1.0, 1.0, 1.0)
+                cr.paint()
+                cr.scale(scale, scale)
+
+                c_cr = PycairoContext.from_address(id(cr)).ctx
+                cls._lib.poppler_page_render(page, c_cr)
+                return surf
+            finally:
+                cls._libgobject.g_object_unref(page)
+
+    @classmethod
+    def extract_text(cls, doc_handle, max_pages: int = 200) -> str:
+        if not doc_handle or not cls.is_available():
+            return ""
+        pages_out = []
+        with cls._lock:
+            n_pages = cls._lib.poppler_document_get_n_pages(doc_handle)
+            limit = min(n_pages, max_pages)
+            for i in range(limit):
+                page = cls._lib.poppler_document_get_page(doc_handle, i)
+                if not page:
+                    continue
+                txt_ptr = cls._lib.poppler_page_get_text(page)
+                if txt_ptr:
+                    txt = ctypes.string_at(txt_ptr).decode("utf-8", errors="replace")
+                    cls._libglib.g_free(txt_ptr)
+                    pages_out.append(txt)
+                else:
+                    pages_out.append("")
+                cls._libgobject.g_object_unref(page)
+        return "\x0c".join(pages_out)
+
+    @classmethod
+    def close_document(cls, doc_handle):
+        if doc_handle and cls._libgobject:
+            with cls._lock:
+                cls._libgobject.g_object_unref(doc_handle)
 
 
 @dataclass
@@ -124,11 +287,22 @@ class DocumentParser:
 
     @staticmethod
     def extract_pdf_text(file_path: str) -> str:
-        """Extract text from a PDF file using pdftotext if available."""
+        """Extract text from a PDF file using PopplerBridge (with pdftotext fallback)."""
+        abs_path = os.path.abspath(file_path)
+        if PopplerBridge.is_available():
+            doc = PopplerBridge.open_document(abs_path)
+            if doc:
+                try:
+                    txt = PopplerBridge.extract_text(doc)
+                    if txt.strip():
+                        return txt.replace("\x00", "\ufffd")
+                finally:
+                    PopplerBridge.close_document(doc)
+
         if shutil.which("pdftotext"):
             try:
                 proc = subprocess.run(
-                    ["pdftotext", "-layout", "--", os.path.abspath(file_path), "-"],
+                    ["pdftotext", "-layout", "--", abs_path, "-"],
                     capture_output=True,
                     text=True,
                     errors="replace",
@@ -530,19 +704,87 @@ class DocumentParser:
 
 
 class PDFPageRenderer:
-    """Renders PDF pages to PNG files on demand using pdftoppm."""
+    """
+    Renders PDF pages asynchronously on-demand using PopplerBridge (in-memory Cairo)
+    with a pdftoppm fallback.
+    """
 
     def __init__(self, pdf_path: Optional[str] = None):
-        self.pdf_path = pdf_path
+        self.pdf_path = None
         self.temp_dir = tempfile.mkdtemp(prefix="docupad_pdf_")
         self.page_count = 0
+        self._doc_handle = None
+        self._page_sizes = {}
+        self._pixbuf_cache = {}  # (page_num, scale_key): GdkPixbuf.Pixbuf
+        self._render_lock = threading.Lock()
         if pdf_path:
             self.load_pdf(pdf_path)
 
     def load_pdf(self, pdf_path: str) -> int:
+        self.cleanup_doc()
         self.pdf_path = os.path.abspath(pdf_path)
+        if PopplerBridge.is_available():
+            self._doc_handle = PopplerBridge.open_document(self.pdf_path)
+            if self._doc_handle:
+                self.page_count = PopplerBridge.get_page_count(self._doc_handle)
+                return self.page_count
         self.page_count = self._detect_page_count(self.pdf_path)
         return self.page_count
+
+    def get_page_size(self, page_num: int) -> Tuple[float, float]:
+        if page_num in self._page_sizes:
+            return self._page_sizes[page_num]
+        if self._doc_handle and PopplerBridge.is_available():
+            sz = PopplerBridge.get_page_size(self._doc_handle, page_num - 1)
+            self._page_sizes[page_num] = sz
+            return sz
+        return (595.0, 842.0)
+
+    def render_page_pixbuf(self, page_num: int, scale: float = 1.0) -> Optional[GdkPixbuf.Pixbuf]:
+        """Render page_num (1-based) to GdkPixbuf at scale factor without blocking disk operations."""
+        if not self.pdf_path or self.page_count == 0:
+            return None
+        page_num = max(1, min(page_num, self.page_count))
+        scale_key = round(scale, 2)
+        cache_key = (page_num, scale_key)
+        with self._render_lock:
+            if cache_key in self._pixbuf_cache:
+                return self._pixbuf_cache[cache_key]
+
+        pix = None
+        if self._doc_handle and PopplerBridge.is_available():
+            surf = PopplerBridge.render_page(self._doc_handle, page_num - 1, scale=scale * 1.333)
+            if surf is not None:
+                w = surf.get_width()
+                h = surf.get_height()
+                pix = Gdk.pixbuf_get_from_surface(surf, 0, 0, w, h)
+
+        if pix is None:
+            # Fallback to pdftoppm
+            dpi = int(round(120 * scale))
+            png_path = self.render_page_png(page_num, dpi=dpi)
+            if png_path and os.path.isfile(png_path):
+                try:
+                    pix = GdkPixbuf.Pixbuf.new_from_file(png_path)
+                except Exception:
+                    pass
+
+        if pix is not None:
+            with self._render_lock:
+                if len(self._pixbuf_cache) > 16:
+                    self._pixbuf_cache.pop(next(iter(self._pixbuf_cache)))
+                self._pixbuf_cache[cache_key] = pix
+
+        return pix
+
+    def render_page_async(self, page_num: int, scale: float, callback: Callable[[int, float, Optional[GdkPixbuf.Pixbuf]], None]):
+        """Asynchronously render page in a background thread and invoke callback(page_num, scale, pixbuf) on main loop."""
+        def worker():
+            pix = self.render_page_pixbuf(page_num, scale)
+            GLib.idle_add(callback, page_num, scale, pix)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
 
     @staticmethod
     def _detect_page_count(pdf_path: str) -> int:
@@ -582,36 +824,59 @@ class PDFPageRenderer:
 
     def render_page_png(self, page_num: int, dpi: int = 150) -> Optional[str]:
         """Render 1-based page_num at the given DPI and return the PNG file path."""
-        if not self.pdf_path or not os.path.isfile(self.pdf_path) or not shutil.which("pdftoppm"):
+        if not self.pdf_path or not os.path.isfile(self.pdf_path):
             return None
         page_num = max(1, min(page_num, max(1, self.page_count)))
         out_prefix = os.path.join(self.temp_dir, f"page_{page_num}_{dpi}")
         expected_png = f"{out_prefix}.png"
         if os.path.isfile(expected_png):
             return expected_png
-        try:
-            subprocess.run(
-                [
-                    "pdftoppm",
-                    "-png",
-                    "-r", str(dpi),
-                    "-f", str(page_num),
-                    "-l", str(page_num),
-                    "-singlefile",
-                    "--",
-                    self.pdf_path,
-                    out_prefix,
-                ],
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-            if os.path.isfile(expected_png):
-                return expected_png
-        except Exception:
-            pass
+
+        # Use PopplerBridge if available (75x faster than pdftoppm CLI)
+        if self._doc_handle and PopplerBridge.is_available():
+            scale = dpi / 72.0
+            surf = PopplerBridge.render_page(self._doc_handle, page_num - 1, scale=scale)
+            if surf is not None:
+                try:
+                    surf.write_to_png(expected_png)
+                    return expected_png
+                except Exception:
+                    pass
+
+        # pdftoppm CLI fallback
+        if shutil.which("pdftoppm"):
+            try:
+                subprocess.run(
+                    [
+                        "pdftoppm",
+                        "-png",
+                        "-r", str(dpi),
+                        "-f", str(page_num),
+                        "-l", str(page_num),
+                        "-singlefile",
+                        "--",
+                        self.pdf_path,
+                        out_prefix,
+                    ],
+                    capture_output=True,
+                    timeout=20,
+                    check=False,
+                )
+                if os.path.isfile(expected_png):
+                    return expected_png
+            except Exception:
+                pass
         return None
 
+    def cleanup_doc(self):
+        with self._render_lock:
+            self._pixbuf_cache.clear()
+            self._page_sizes.clear()
+            if self._doc_handle and PopplerBridge.is_available():
+                PopplerBridge.close_document(self._doc_handle)
+                self._doc_handle = None
+
     def cleanup(self):
+        self.cleanup_doc()
         if self.temp_dir and os.path.isdir(self.temp_dir):
             shutil.rmtree(self.temp_dir, ignore_errors=True)

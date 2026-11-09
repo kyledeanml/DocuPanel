@@ -9,6 +9,7 @@ import os
 import tempfile
 import cairo
 import gi
+from typing import Optional
 
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
@@ -84,10 +85,15 @@ class DocViewer(Gtk.Box):
         self._last_scroll_zoom_time = 0
         self._font_css_provider = None
 
-        # PDF state
+        # PDF state & responsive rendering
         self.pdf_renderer = None
         self.current_pdf_page = 1
         self.total_pdf_pages = 0
+        self._current_pdf_pixbuf = None
+        self._current_page_base_w = 595.0
+        self._current_page_base_h = 842.0
+        self._pdf_render_gen = 0
+        self._pdf_debounce_timer = None
 
         # Stack switching between 'source', 'rendered', and 'pdf'
         self.view_stack = Gtk.Stack()
@@ -339,6 +345,8 @@ class DocViewer(Gtk.Box):
                 state = st
         if state & Gdk.ModifierType.CONTROL_MASK:
             ev_time = getattr(event, "time", 0)
+            last_time = getattr(self, "_last_scroll_zoom_time", 0)
+
             direction = getattr(event, "direction", None)
             if direction is None and hasattr(event, "get_scroll_direction"):
                 ok_d, d = event.get_scroll_direction()
@@ -346,12 +354,12 @@ class DocViewer(Gtk.Box):
                     direction = d
 
             if direction == Gdk.ScrollDirection.UP:
-                if not ev_time or ev_time != self._last_scroll_zoom_time:
+                if not ev_time or ev_time != last_time:
                     self._last_scroll_zoom_time = ev_time
                     self.zoom_in()
                 return True
             elif direction == Gdk.ScrollDirection.DOWN:
-                if not ev_time or ev_time != self._last_scroll_zoom_time:
+                if not ev_time or ev_time != last_time:
                     self._last_scroll_zoom_time = ev_time
                     self.zoom_out()
                 return True
@@ -359,12 +367,12 @@ class DocViewer(Gtk.Box):
                 res = event.get_scroll_deltas() if hasattr(event, "get_scroll_deltas") else ()
                 dy = res[-1] if res else getattr(event, "delta_y", 0.0)
                 if dy < -0.01:
-                    if not ev_time or ev_time != self._last_scroll_zoom_time:
+                    if not ev_time or ev_time != last_time:
                         self._last_scroll_zoom_time = ev_time
                         self.zoom_in()
                     return True
                 elif dy > 0.01:
-                    if not ev_time or ev_time != self._last_scroll_zoom_time:
+                    if not ev_time or ev_time != last_time:
                         self._last_scroll_zoom_time = ev_time
                         self.zoom_out()
                     return True
@@ -411,24 +419,66 @@ class DocViewer(Gtk.Box):
     def goto_pdf_page(self, page_num: int):
         if not self.pdf_renderer or self.pdf_renderer.page_count == 0:
             return
-        self.current_pdf_page = max(1, min(int(page_num), self.pdf_renderer.page_count))
+        new_page = max(1, min(int(page_num), self.pdf_renderer.page_count))
+        if new_page != self.current_pdf_page:
+            self._current_pdf_pixbuf = None
+        self.current_pdf_page = new_page
         self._refresh_pdf_page()
 
     def _refresh_pdf_page(self):
         if not self.pdf_renderer:
             return
         scale = self.ZOOM_STEPS[self.zoom_index]
-        dpi = int(round(130 * scale))
-        png_path = self.pdf_renderer.render_page_png(self.current_pdf_page, dpi=dpi)
         self.lbl_pdf_page.set_text(f"Page {self.current_pdf_page} / {self.pdf_renderer.page_count}  ({int(scale*100)}%)")
         self.btn_pdf_prev.set_sensitive(self.current_pdf_page > 1)
         self.btn_pdf_next.set_sensitive(self.current_pdf_page < self.pdf_renderer.page_count)
-        if png_path and os.path.isfile(png_path):
+
+        # 1. Instant zero-latency visual scaling of existing pixbuf (1ms smooth feedback)
+        if getattr(self, "_current_pdf_pixbuf", None) is not None and getattr(self, "_current_page_base_w", 0) > 0:
+            target_w = max(10, int(round(self._current_page_base_w * scale)))
+            target_h = max(10, int(round(self._current_page_base_h * scale)))
+            cur_pix = self.pdf_image.get_pixbuf()
+            if cur_pix is not None and abs(cur_pix.get_width() - target_w) > 3:
+                try:
+                    quick_scaled = self._current_pdf_pixbuf.scale_simple(
+                        target_w, target_h, GdkPixbuf.InterpType.BILINEAR
+                    )
+                    if quick_scaled:
+                        self.pdf_image.set_from_pixbuf(quick_scaled)
+                except Exception:
+                    pass
+
+        # 2. Debounced asynchronous razor-sharp vector render (runs in background thread)
+        self._pdf_render_gen = getattr(self, "_pdf_render_gen", 0) + 1
+        gen = self._pdf_render_gen
+
+        timer = getattr(self, "_pdf_debounce_timer", None)
+        if timer:
             try:
-                pix = GdkPixbuf.Pixbuf.new_from_file(png_path)
-                self.pdf_image.set_from_pixbuf(pix)
+                GLib.source_remove(timer)
             except Exception:
                 pass
+            self._pdf_debounce_timer = None
+
+        def _do_render():
+            self._pdf_debounce_timer = None
+            page = self.current_pdf_page
+            self.pdf_renderer.render_page_async(
+                page,
+                scale,
+                lambda p_num, sc, pix: self._on_pdf_rendered(gen, p_num, sc, pix)
+            )
+            return False
+
+        self._pdf_debounce_timer = GLib.timeout_add(30, _do_render)
+
+    def _on_pdf_rendered(self, gen: int, page_num: int, scale: float, pixbuf: Optional[GdkPixbuf.Pixbuf]):
+        if gen != getattr(self, "_pdf_render_gen", 0) or page_num != self.current_pdf_page or pixbuf is None:
+            return
+        self._current_pdf_pixbuf = pixbuf
+        self._current_page_base_w = max(10.0, pixbuf.get_width() / scale)
+        self._current_page_base_h = max(10.0, pixbuf.get_height() / scale)
+        self.pdf_image.set_from_pixbuf(pixbuf)
 
     # --------------------------------------------------------------------------
     # Retina Vision & Font Scaling

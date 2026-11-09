@@ -135,6 +135,36 @@ class TestViewerAndAssets(unittest.TestCase):
         self.assertIn("Name=DocuPad", content)
         self.assertIn("StartupWMClass=docupad", content)
 
+    def test_pdf_renderer_and_poppler_bridge(self):
+        from doc_tools import PDFPageRenderer, PopplerBridge
+        self.assertTrue(PopplerBridge.is_available())
+
+        # Test with available system PDF if present, or create minimal PDF
+        pdf_path = "/home/bluechile/Games/Heroic/PillarsOfEternity/CollectorsBook/pe-collectors-book.pdf"
+        if not os.path.isfile(pdf_path):
+            import cairo
+            pdf_path = os.path.join(tempfile.gettempdir(), "test_docupad.pdf")
+            surf = cairo.PDFSurface(pdf_path, 200, 200)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0, 0, 0)
+            cr.show_text("DocuPad Test")
+            surf.show_page()
+            surf.finish()
+
+        renderer = PDFPageRenderer(pdf_path)
+        self.assertGreater(renderer.page_count, 0)
+        pix = renderer.render_page_pixbuf(1, scale=1.0)
+        self.assertIsNotNone(pix)
+        self.assertGreater(pix.get_width(), 0)
+        self.assertGreater(pix.get_height(), 0)
+
+        # Test zoom scaling calculation
+        pix_zoomed = renderer.render_page_pixbuf(1, scale=1.5)
+        self.assertIsNotNone(pix_zoomed)
+        self.assertGreater(pix_zoomed.get_width(), pix.get_width())
+
+        renderer.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
