@@ -881,7 +881,6 @@ class PDFPageRenderer:
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        t.start()
 
     @staticmethod
     def _detect_page_count(pdf_path: str) -> int:

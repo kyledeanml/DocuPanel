@@ -247,6 +247,17 @@ class TestViewerAndAssets(unittest.TestCase):
             pix = renderer.render_page_pixbuf(1, scale=1.0)
             self.assertIsNotNone(pix)
             self.assertGreater(pix.get_width(), 100)
+
+            # Test render_page_async
+            async_called = []
+            renderer.render_page_async(1, 1.0, lambda p, s, px: async_called.append(px))
+            import time
+            time.sleep(0.05)
+            from gi.repository import GLib
+            ctx = GLib.main_context_default()
+            for _ in range(10):
+                ctx.iteration(False)
+            self.assertTrue(len(async_called) > 0)
             renderer.cleanup()
 
             # 3. Test DocViewer load_file populates pdf_image pixbuf when display is present
