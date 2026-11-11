@@ -8,6 +8,7 @@ Designed for Linux Mint Cinnamon alongside PythonPad.
 
 import os
 import sys
+from typing import Optional
 
 sys.dont_write_bytecode = True
 import gi
@@ -30,7 +31,7 @@ class DocuPadWindow(Gtk.ApplicationWindow):
     APP_NAME = "DocuPad"
     APP_VERSION = "2.1"
 
-    def __init__(self, app, initial_files=None):
+    def __init__(self, app=None, initial_files=None):
         super().__init__(application=app, title=self.APP_NAME)
         self.set_default_size(1100, 740)
         self.set_position(Gtk.WindowPosition.CENTER)
@@ -296,20 +297,20 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         zoom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         Gtk.StyleContext.add_class(zoom_box.get_style_context(), "linked")
 
-        btn_zoom_out = Gtk.Button.new_from_icon_name("zoom-out-symbolic", Gtk.IconSize.BUTTON)
-        btn_zoom_out.set_tooltip_text("Retina Zoom Out (Ctrl+-)")
-        btn_zoom_out.connect("clicked", lambda b: self.zoom_active(out=True))
-        zoom_box.pack_start(btn_zoom_out, False, False, 0)
+        self.btn_zoom_out = Gtk.Button.new_from_icon_name("zoom-out-symbolic", Gtk.IconSize.BUTTON)
+        self.btn_zoom_out.set_tooltip_text("Retina Zoom Out (Ctrl+-)")
+        self.btn_zoom_out.connect("clicked", lambda b: self.zoom_active(out=True))
+        zoom_box.pack_start(self.btn_zoom_out, False, False, 0)
 
         self.btn_zoom_reset = Gtk.Button(label="100%")
-        self.btn_zoom_reset.set_tooltip_text("Reset Retina Scaling (Ctrl+0)")
+        self.btn_zoom_reset.set_tooltip_text("Reset Retina Scaling to 100% (Ctrl+0)")
         self.btn_zoom_reset.connect("clicked", lambda b: self.zoom_active(reset=True))
         zoom_box.pack_start(self.btn_zoom_reset, False, False, 0)
 
-        btn_zoom_in = Gtk.Button.new_from_icon_name("zoom-in-symbolic", Gtk.IconSize.BUTTON)
-        btn_zoom_in.set_tooltip_text("Retina Zoom In (Ctrl++)")
-        btn_zoom_in.connect("clicked", lambda b: self.zoom_active(out=False))
-        zoom_box.pack_start(btn_zoom_in, False, False, 0)
+        self.btn_zoom_in = Gtk.Button.new_from_icon_name("zoom-in-symbolic", Gtk.IconSize.BUTTON)
+        self.btn_zoom_in.set_tooltip_text("Retina Zoom In (Ctrl++)")
+        self.btn_zoom_in.connect("clicked", lambda b: self.zoom_active(out=False))
+        zoom_box.pack_start(self.btn_zoom_in, False, False, 0)
 
         hb.pack_end(zoom_box)
 
@@ -641,6 +642,22 @@ class DocuPadWindow(Gtk.ApplicationWindow):
                 viewer.refresh_rendered_preview()
         return False
 
+    def _update_zoom_ui(self, viewer: Optional[DocViewer] = None):
+        if viewer is None:
+            viewer = self.get_current_viewer()
+        if not viewer:
+            return
+        pct = viewer.get_zoom_percent()
+        self.lbl_zoom.set_text(f"Retina: {pct}%")
+        self.btn_zoom_reset.set_label(f"{pct}%")
+        self.btn_zoom_reset.set_tooltip_text(f"Reset Retina Scaling to 100% (currently {pct}%) (Ctrl+0)")
+        if hasattr(self, "btn_zoom_out"):
+            self.btn_zoom_out.set_sensitive(viewer.can_zoom_out())
+            self.btn_zoom_out.set_tooltip_text(f"Retina Zoom Out (Ctrl+-) [Current: {pct}%]")
+        if hasattr(self, "btn_zoom_in"):
+            self.btn_zoom_in.set_sensitive(viewer.can_zoom_in())
+            self.btn_zoom_in.set_tooltip_text(f"Retina Zoom In (Ctrl++) [Current: {pct}%]")
+
     def _refresh_stats_now(self, viewer: DocViewer):
         lines, words, chars, read_min = viewer.get_document_statistics()
         if viewer.doc_type == "pdf" and viewer.total_pdf_pages > 0:
@@ -648,14 +665,11 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         else:
             self.lbl_stats.set_text(f"{lines} lines, {words} words, {chars} chars (~{read_min} min read)")
         self.lbl_format.set_text(f"{viewer.doc_type.upper()} | {viewer.file_encoding}")
-        pct = viewer.get_zoom_percent()
-        self.lbl_zoom.set_text(f"Retina: {pct}%")
-        self.btn_zoom_reset.set_label(f"{pct}%")
+        self._update_zoom_ui(viewer)
 
     def _on_zoom_changed(self, viewer, pct):
         if viewer == self.get_current_viewer():
-            self.lbl_zoom.set_text(f"Retina: {pct}%")
-            self.btn_zoom_reset.set_label(f"{pct}%")
+            self._update_zoom_ui(viewer)
 
     def _on_toggle_toc(self, btn):
         self.toc_box.set_visible(btn.get_active())
@@ -698,6 +712,7 @@ class DocuPadWindow(Gtk.ApplicationWindow):
             viewer.zoom_out()
         else:
             viewer.zoom_in()
+        self._update_zoom_ui(viewer)
 
     # --------------------------------------------------------------------------
     # File Dialogs & Companion Integration

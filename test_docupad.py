@@ -252,11 +252,14 @@ class TestViewerAndAssets(unittest.TestCase):
             async_called = []
             renderer.render_page_async(1, 1.0, lambda p, s, px: async_called.append(px))
             import time
-            time.sleep(0.05)
             from gi.repository import GLib
             ctx = GLib.main_context_default()
-            for _ in range(10):
-                ctx.iteration(False)
+            for _ in range(50):
+                time.sleep(0.01)
+                while ctx.pending():
+                    ctx.iteration(False)
+                if async_called:
+                    break
             self.assertTrue(len(async_called) > 0)
             renderer.cleanup()
 
@@ -422,6 +425,161 @@ class TestViewerAndAssets(unittest.TestCase):
                     os.rmdir(tmp_dir)
                 except OSError:
                     pass
+
+    def test_pdf_mouse_cursor_grip_and_panning_when_zoomed_in(self):
+        """Test mouse cursor grip, grabbing cursor, and smooth adjustment panning when zoomed in."""
+        import cairo
+        from gi.repository import Gtk, Gdk
+        has_display, _ = Gtk.init_check()
+        if not has_display:
+            self.skipTest("Requires display connection for GtkWidget test")
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_pan_")
+        pdf_path = os.path.join(tmp_dir, "large_page.pdf")
+        try:
+            # Create a large page PDF
+            surf = cairo.PDFSurface(pdf_path, 1200, 1600)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0.9, 0.9, 0.9)
+            cr.paint()
+            surf.show_page()
+            surf.finish()
+
+            viewer = DocViewer()
+            viewer.load_file(pdf_path)
+            self.assertEqual(viewer.get_view_mode(), "pdf")
+
+            # Check pannability
+            viewer.zoom_index = DocViewer.DEFAULT_ZOOM_INDEX
+            self.assertFalse(viewer.zoom_index > DocViewer.DEFAULT_ZOOM_INDEX)
+
+            # Zoom in
+            viewer.zoom_in()
+            self.assertGreater(viewer.zoom_index, DocViewer.DEFAULT_ZOOM_INDEX)
+            self.assertTrue(viewer._is_pdf_pannable())
+
+            # Configure adjustments for test
+            vadj = viewer.scrolled_pdf.get_vadjustment()
+            hadj = viewer.scrolled_pdf.get_hadjustment()
+            vadj.set_lower(0.0)
+            vadj.set_upper(2000.0)
+            vadj.set_page_size(500.0)
+            vadj.set_value(100.0)
+
+            hadj.set_lower(0.0)
+            hadj.set_upper(1500.0)
+            hadj.set_page_size(400.0)
+            hadj.set_value(50.0)
+
+            class MockButtonEvent:
+                def __init__(self, button, x_root, y_root):
+                    self.button = button
+                    self.x_root = x_root
+                    self.y_root = y_root
+
+                def get_root_coords(self):
+                    return True, self.x_root, self.y_root
+
+            # 1. Button Press (Left Click to Grip)
+            press_ev = MockButtonEvent(1, 300.0, 400.0)
+            handled = viewer._on_pan_button_press(viewer.pdf_event_box, press_ev)
+            self.assertTrue(handled)
+            self.assertTrue(viewer._is_panning)
+            self.assertEqual(viewer._pan_start_x, 300.0)
+            self.assertEqual(viewer._pan_start_y, 400.0)
+
+            # 2. Motion Notify (Drag mouse diagonally: move right 30px, up 40px)
+            # Dragging right pulls page right -> hadj decreases by 30 (from 50 -> 20)
+            # Dragging up pushes page up -> vadj increases by 40 (from 100 -> 140)
+            motion_ev = MockButtonEvent(1, 330.0, 360.0)
+            handled = viewer._on_pan_motion_notify(viewer.pdf_event_box, motion_ev)
+            self.assertTrue(handled)
+            self.assertTrue(viewer._pan_has_moved)
+            self.assertAlmostEqual(hadj.get_value(), 20.0)
+            self.assertAlmostEqual(vadj.get_value(), 140.0)
+
+            # 3. Button Release (Release Grip)
+            release_ev = MockButtonEvent(1, 330.0, 360.0)
+            handled = viewer._on_pan_button_release(viewer.pdf_event_box, release_ev)
+            self.assertTrue(handled)
+            self.assertFalse(viewer._is_panning)
+
+            if viewer.pdf_renderer:
+                viewer.pdf_renderer.cleanup()
+        finally:
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                    os.rmdir(tmp_dir)
+                except OSError:
+                    pass
+
+    def test_retina_zoom_accuracy_and_display(self):
+        """Test exact Retina zoom rounding without truncation and HeaderBar / PDF / status label consistency."""
+        from gi.repository import Gtk
+        has_display, _ = Gtk.init_check()
+        if not has_display:
+            self.skipTest("Requires display connection for DocuPadWindow test")
+
+        from docupad import DocuPadWindow
+        win = DocuPadWindow()
+        viewer = win.get_current_viewer()
+        self.assertIsNotNone(viewer)
+
+        # Check all zoom steps percent representations
+        expected_percents = [int(round(s * 100)) for s in DocViewer.ZOOM_STEPS]
+        for idx, expected in enumerate(expected_percents):
+            viewer.zoom_index = idx
+            pct = viewer.get_zoom_percent()
+            self.assertEqual(pct, expected)
+            self.assertNotIn(".", str(pct))
+
+        # Check steps that previously truncated: 70%, 90%, 140%, 155%
+        # 0.70 -> 70 (not 69)
+        viewer.zoom_index = DocViewer.ZOOM_STEPS.index(0.70)
+        self.assertEqual(viewer.get_zoom_percent(), 70)
+        win._update_zoom_ui(viewer)
+        self.assertEqual(win.lbl_zoom.get_text(), "Retina: 70%")
+        self.assertEqual(win.btn_zoom_reset.get_label(), "70%")
+
+        # 0.90 -> 90 (not 89)
+        viewer.zoom_index = DocViewer.ZOOM_STEPS.index(0.90)
+        self.assertEqual(viewer.get_zoom_percent(), 90)
+        win._update_zoom_ui(viewer)
+        self.assertEqual(win.lbl_zoom.get_text(), "Retina: 90%")
+        self.assertEqual(win.btn_zoom_reset.get_label(), "90%")
+
+        # 1.40 -> 140 (not 139)
+        viewer.zoom_index = DocViewer.ZOOM_STEPS.index(1.40)
+        self.assertEqual(viewer.get_zoom_percent(), 140)
+        win._update_zoom_ui(viewer)
+        self.assertEqual(win.lbl_zoom.get_text(), "Retina: 140%")
+        self.assertEqual(win.btn_zoom_reset.get_label(), "140%")
+
+        # Sensitivity at zoom bounds
+        viewer.zoom_index = 0
+        win._update_zoom_ui(viewer)
+        self.assertFalse(viewer.can_zoom_out())
+        self.assertTrue(viewer.can_zoom_in())
+        self.assertFalse(win.btn_zoom_out.get_sensitive())
+        self.assertTrue(win.btn_zoom_in.get_sensitive())
+
+        viewer.zoom_index = len(DocViewer.ZOOM_STEPS) - 1
+        win._update_zoom_ui(viewer)
+        self.assertTrue(viewer.can_zoom_out())
+        self.assertFalse(viewer.can_zoom_in())
+        self.assertTrue(win.btn_zoom_out.get_sensitive())
+        self.assertFalse(win.btn_zoom_in.get_sensitive())
+
+        # Reset zoom
+        win.zoom_active(reset=True)
+        self.assertEqual(viewer.get_zoom_percent(), 100)
+        self.assertEqual(win.lbl_zoom.get_text(), "Retina: 100%")
+        self.assertEqual(win.btn_zoom_reset.get_label(), "100%")
+        self.assertTrue(win.btn_zoom_out.get_sensitive())
+        self.assertTrue(win.btn_zoom_in.get_sensitive())
+
+        win.destroy()
 
 
 if __name__ == "__main__":
