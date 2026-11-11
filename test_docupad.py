@@ -11,11 +11,15 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
+import cairo
+
 sys.dont_write_bytecode = True
 import gi
 
+gi.require_version('Gtk', '3.0')
+gi.require_version('Gdk', '3.0')
 gi.require_version('GtkSource', '4')
-from gi.repository import GtkSource
+from gi.repository import Gtk, Gdk, GtkSource
 
 from doc_tools import DocumentParser
 from viewer import DocViewer
@@ -687,6 +691,100 @@ class TestViewerAndAssets(unittest.TestCase):
             if os.path.exists(md_path):
                 try:
                     os.remove(md_path)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+    def test_mouse_grip_and_pan_with_real_gdk_events_and_fit_state(self):
+        """Test mouse grip and panning with real Gdk.Event objects and accurate cursor/pannable state."""
+        from docupad import DocuPadWindow
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_pan_test_")
+        pdf_path = os.path.join(tmp_dir, "pantest.pdf")
+        try:
+            # Create a 2-page test PDF with standard A4 dimensions (595x842)
+            surf = cairo.PDFSurface(pdf_path, 595, 842)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0.95, 0.95, 0.95)
+            cr.paint()
+            surf.show_page()
+            cr.paint()
+            surf.show_page()
+            surf.finish()
+
+            win = DocuPadWindow(initial_files=[pdf_path])
+            win.show_all()
+
+            for _ in range(50):
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+
+            viewer = win.get_current_viewer()
+            self.assertEqual(viewer.get_view_mode(), "pdf")
+
+            # 1. In full page view fitting window, page fits cleanly and is not pannable
+            viewer.fit_to_page()
+            for _ in range(20):
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+            self.assertFalse(viewer._is_pdf_pannable())
+
+            # 2. Zoom in so document has scrollable overflow
+            for _ in range(5):
+                viewer.zoom_in()
+            for _ in range(30):
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+
+            self.assertTrue(viewer._is_pdf_pannable())
+
+            vadj = viewer.scrolled_pdf.get_vadjustment()
+            hadj = viewer.scrolled_pdf.get_hadjustment()
+            v_start = vadj.get_value()
+            h_start = hadj.get_value()
+
+            # 3. Simulate mouse press with native Gdk.Event
+            ev_press = Gdk.Event.new(Gdk.EventType.BUTTON_PRESS)
+            ev_press.button.button = 1
+            ev_press.button.x_root = 400.0
+            ev_press.button.y_root = 400.0
+
+            handled_press = viewer._on_pan_button_press(viewer.pdf_event_box, ev_press)
+            self.assertTrue(handled_press)
+            self.assertTrue(viewer._is_panning)
+
+            # 4. Simulate mouse drag (move pointer up 60px -> scroll down 60px)
+            ev_motion = Gdk.Event.new(Gdk.EventType.MOTION_NOTIFY)
+            ev_motion.motion.x_root = 400.0
+            ev_motion.motion.y_root = 340.0
+
+            handled_motion = viewer._on_pan_motion_notify(viewer.pdf_event_box, ev_motion)
+            self.assertTrue(handled_motion)
+            self.assertAlmostEqual(vadj.get_value(), v_start + 60.0, delta=1.0)
+
+            # 5. Simulate mouse release with native Gdk.Event
+            ev_release = Gdk.Event.new(Gdk.EventType.BUTTON_RELEASE)
+            ev_release.button.button = 1
+
+            handled_release = viewer._on_pan_button_release(viewer.pdf_event_box, ev_release)
+            self.assertTrue(handled_release)
+            self.assertFalse(viewer._is_panning)
+
+            # 6. Fit to page clears pannable state
+            viewer.fit_to_page()
+            for _ in range(20):
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+            self.assertFalse(viewer._is_pdf_pannable())
+
+            win.destroy()
+
+        finally:
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
                 except OSError:
                     pass
             try:

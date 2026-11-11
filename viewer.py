@@ -190,6 +190,7 @@ class DocViewer(Gtk.Box):
 
         self.scrolled_pdf = Gtk.ScrolledWindow()
         self.scrolled_pdf.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.scrolled_pdf.set_kinetic_scrolling(False)
         self.scrolled_pdf.connect("size-allocate", self._on_pdf_size_allocate)
         self.pdf_image = Gtk.Image()
         self.pdf_image.set_margin_top(16)
@@ -205,6 +206,7 @@ class DocViewer(Gtk.Box):
             Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.BUTTON_RELEASE_MASK
             | Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.BUTTON_MOTION_MASK
             | Gdk.EventMask.ENTER_NOTIFY_MASK
             | Gdk.EventMask.LEAVE_NOTIFY_MASK
         )
@@ -214,6 +216,7 @@ class DocViewer(Gtk.Box):
         self.pdf_event_box.connect("motion-notify-event", self._on_pan_motion_notify)
         self.pdf_event_box.connect("enter-notify-event", self._on_pan_enter_notify)
         self.pdf_event_box.connect("leave-notify-event", self._on_pan_leave_notify)
+        self.pdf_event_box.connect("grab-broken-event", self._on_pan_grab_broken)
         self.pdf_event_box.connect("realize", lambda w: self._update_pan_cursor(gripping=False))
 
         self.scrolled_pdf.add_events(pan_mask)
@@ -222,9 +225,21 @@ class DocViewer(Gtk.Box):
         self.scrolled_pdf.connect("motion-notify-event", self._on_pan_motion_notify)
         self.scrolled_pdf.connect("enter-notify-event", self._on_pan_enter_notify)
         self.scrolled_pdf.connect("leave-notify-event", self._on_pan_leave_notify)
+        self.scrolled_pdf.connect("grab-broken-event", self._on_pan_grab_broken)
         self.scrolled_pdf.connect("realize", lambda w: self._update_pan_cursor(gripping=False))
 
         self.scrolled_pdf.add(self.pdf_event_box)
+        viewport = self.scrolled_pdf.get_child()
+        if viewport:
+            viewport.add_events(pan_mask)
+            viewport.connect("button-press-event", self._on_pan_button_press)
+            viewport.connect("button-release-event", self._on_pan_button_release)
+            viewport.connect("motion-notify-event", self._on_pan_motion_notify)
+            viewport.connect("enter-notify-event", self._on_pan_enter_notify)
+            viewport.connect("leave-notify-event", self._on_pan_leave_notify)
+            viewport.connect("grab-broken-event", self._on_pan_grab_broken)
+            viewport.connect("realize", lambda w: self._update_pan_cursor(gripping=False))
+
         pdf_box.pack_start(self.scrolled_pdf, True, True, 0)
 
         self.view_stack.add_named(pdf_box, "pdf")
@@ -507,19 +522,32 @@ class DocViewer(Gtk.Box):
     # Mouse Cursor Grip & Drag Panning (when zoomed in)
     # --------------------------------------------------------------------------
     def _is_pdf_pannable(self) -> bool:
-        """Check if PDF page can be panned (zoomed in or larger than viewport)."""
+        """Check if PDF page can be panned (page exceeds viewport in either dimension)."""
         if self.get_view_mode() != "pdf":
             return False
-        if self.zoom_index > self.DEFAULT_ZOOM_INDEX:
-            return True
+        if getattr(self, "_fit_page_mode", False):
+            return False
         if hasattr(self, "scrolled_pdf"):
             vadj = self.scrolled_pdf.get_vadjustment()
             hadj = self.scrolled_pdf.get_hadjustment()
-            if vadj and (vadj.get_upper() - vadj.get_lower() > vadj.get_page_size() + 2):
+            v_pannable = bool(vadj and (vadj.get_upper() - vadj.get_lower() > vadj.get_page_size() + 2))
+            h_pannable = bool(hadj and (hadj.get_upper() - hadj.get_lower() > hadj.get_page_size() + 2))
+            if v_pannable or h_pannable:
                 return True
-            if hadj and (hadj.get_upper() - hadj.get_lower() > hadj.get_page_size() + 2):
-                return True
-        return False
+            if vadj and hadj and (vadj.get_page_size() > 10 or hadj.get_page_size() > 10):
+                return False
+
+        # Fallback if allocations not ready: check pixel dimensions vs viewport
+        scale = self.ZOOM_STEPS[self.zoom_index]
+        if hasattr(self, "scrolled_pdf"):
+            alloc = self.scrolled_pdf.get_allocation()
+            base_w = getattr(self, "_current_page_base_w", 0)
+            base_h = getattr(self, "_current_page_base_h", 0)
+            if alloc.width > 50 and alloc.height > 50 and base_w > 0 and base_h > 0:
+                return (base_w * scale > alloc.width - 20) or (base_h * scale > alloc.height - 20)
+
+        # Fallback for headless environments prior to initial allocation
+        return self.zoom_index > self.DEFAULT_ZOOM_INDEX
 
     def _get_pan_windows(self):
         windows = []
@@ -551,33 +579,72 @@ class DocViewer(Gtk.Box):
         if not windows:
             return
 
+        is_pannable = self._is_pdf_pannable()
         for gdk_win in windows:
-            disp = gdk_win.get_display()
-            if not disp:
-                continue
-            if gripping:
-                cursor = Gdk.Cursor.new_from_name(disp, "grabbing")
-                if not cursor:
-                    cursor = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.FLEUR)
-                gdk_win.set_cursor(cursor)
-            elif self._is_pdf_pannable():
-                cursor = Gdk.Cursor.new_from_name(disp, "grab")
-                if not cursor:
-                    cursor = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.HAND1)
-                gdk_win.set_cursor(cursor)
-            else:
-                gdk_win.set_cursor(None)
+            try:
+                disp = gdk_win.get_display()
+                if not disp:
+                    continue
+                if gripping:
+                    cursor = Gdk.Cursor.new_from_name(disp, "grabbing")
+                    if not cursor:
+                        cursor = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.FLEUR)
+                    gdk_win.set_cursor(cursor)
+                elif is_pannable:
+                    cursor = Gdk.Cursor.new_from_name(disp, "grab")
+                    if not cursor:
+                        cursor = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.HAND1)
+                    gdk_win.set_cursor(cursor)
+                else:
+                    gdk_win.set_cursor(None)
+            except Exception:
+                pass
+
+    def _get_event_button(self, event) -> int:
+        """Safely extract integer mouse button index (1=Left, 2=Middle, 3=Right)."""
+        if hasattr(event, "get_button"):
+            try:
+                res = event.get_button()
+                if res and res[0]:
+                    return int(res[1])
+            except Exception:
+                pass
+        btn = getattr(event, "button", 0)
+        if hasattr(btn, "button"):
+            try:
+                return int(btn.button)
+            except Exception:
+                pass
+        if isinstance(btn, (int, float)):
+            return int(btn)
+        return 0
 
     def _get_event_root_coords(self, event):
+        """Safely extract root screen coordinates (rx, ry) from button or motion events."""
         if hasattr(event, "get_root_coords"):
-            res = event.get_root_coords()
-            if res and res[0]:
-                return float(res[1]), float(res[2])
-        return float(getattr(event, "x_root", 0.0)), float(getattr(event, "y_root", 0.0))
+            try:
+                res = event.get_root_coords()
+                if res is not None:
+                    if len(res) == 3 and res[0]:
+                        return float(res[1]), float(res[2])
+                    elif len(res) == 2:
+                        return float(res[0]), float(res[1])
+            except Exception:
+                pass
+        if hasattr(event, "button") and hasattr(event.button, "x_root"):
+            return float(event.button.x_root), float(event.button.y_root)
+        if hasattr(event, "motion") and hasattr(event.motion, "x_root"):
+            return float(event.motion.x_root), float(event.motion.y_root)
+        x = getattr(event, "x_root", 0.0)
+        y = getattr(event, "y_root", 0.0)
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            return float(x), float(y)
+        return 0.0, 0.0
 
     def _on_pan_button_press(self, widget, event):
         """Grip the page on left or middle mouse click when zoomed in."""
-        if self.get_view_mode() == "pdf" and getattr(event, "button", 0) in (1, 2):
+        btn = self._get_event_button(event)
+        if self.get_view_mode() == "pdf" and btn in (1, 2):
             if self._is_pdf_pannable():
                 self._is_panning = True
                 rx, ry = self._get_event_root_coords(event)
@@ -624,21 +691,24 @@ class DocViewer(Gtk.Box):
 
     def _on_pan_button_release(self, widget, event):
         """Release the gripped page when mouse button is released."""
-        if getattr(self, "_is_panning", False) and getattr(event, "button", 0) in (1, 2):
+        if getattr(self, "_is_panning", False):
             self._is_panning = False
             self._update_pan_cursor(gripping=False)
             return True
         return False
 
     def _on_pan_enter_notify(self, widget, event):
-        if self.get_view_mode() == "pdf" and not getattr(self, "_is_panning", False):
-            self._update_pan_cursor(gripping=False)
+        if self.get_view_mode() == "pdf":
+            self._update_pan_cursor(gripping=getattr(self, "_is_panning", False))
         return False
 
     def _on_pan_leave_notify(self, widget, event):
-        if not getattr(self, "_is_panning", False):
-            for gdk_win in self._get_pan_windows():
-                gdk_win.set_cursor(None)
+        return False
+
+    def _on_pan_grab_broken(self, widget, event):
+        if getattr(self, "_is_panning", False):
+            self._is_panning = False
+            self._update_pan_cursor(gripping=False)
         return False
 
     # --------------------------------------------------------------------------
@@ -736,6 +806,7 @@ class DocViewer(Gtk.Box):
                 self._current_page_base_w = max(10.0, pix.get_width() / scale)
                 self._current_page_base_h = max(10.0, pix.get_height() / scale)
                 self.pdf_image.set_from_pixbuf(pix)
+                self._update_pan_cursor(gripping=getattr(self, "_is_panning", False))
             return
 
         # 1. Instant zero-latency visual scaling of existing pixbuf (1ms smooth feedback)
@@ -808,6 +879,8 @@ class DocViewer(Gtk.Box):
                 self._last_allocated_w = cur_w
                 self._last_allocated_h = cur_h
                 self.fit_to_page()
+                return
+        self._update_pan_cursor(gripping=getattr(self, "_is_panning", False))
 
     def fit_to_page(self):
         """Scale PDF page so the entire page fits cleanly in the viewport (Full Page View)."""
@@ -846,8 +919,8 @@ class DocViewer(Gtk.Box):
         if base_w <= 0 or base_h <= 0:
             return
 
-        avail_w = max(50.0, float(view_w) - 36.0)
-        avail_h = max(50.0, float(view_h) - 36.0)
+        avail_w = max(50.0, float(view_w) - 48.0)
+        avail_h = max(50.0, float(view_h) - 48.0)
 
         scale_w = avail_w / float(base_w)
         scale_h = avail_h / float(base_h)
@@ -874,6 +947,7 @@ class DocViewer(Gtk.Box):
             self.emit("zoom-changed", self.get_zoom_percent())
         else:
             self._refresh_pdf_page(sync=True)
+        self._update_pan_cursor(gripping=False)
 
     def zoom_in(self):
         self._fit_page_mode = False
