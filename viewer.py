@@ -83,6 +83,9 @@ class DocViewer(Gtk.Box):
         self.base_font_size = 11
         self.zoom_index = self.DEFAULT_ZOOM_INDEX
         self._last_scroll_zoom_time = 0
+        self._is_panning = False
+        self._fit_page_mode = False
+        self._fit_page_pending = False
         self._font_css_provider = None
 
         # PDF state & responsive rendering
@@ -175,6 +178,11 @@ class DocViewer(Gtk.Box):
         self.btn_pdf_next.connect("clicked", lambda b: self.goto_pdf_page(self.current_pdf_page + 1))
         nav_bar.pack_start(self.btn_pdf_next, False, False, 0)
 
+        self.btn_pdf_fit = Gtk.Button.new_from_icon_name("zoom-fit-best-symbolic", Gtk.IconSize.BUTTON)
+        self.btn_pdf_fit.set_tooltip_text("Full Page View / Fit Page (F5 / Ctrl+9)")
+        self.btn_pdf_fit.connect("clicked", lambda b: self.fit_to_page())
+        nav_bar.pack_start(self.btn_pdf_fit, False, False, 0)
+
         self.lbl_pdf_page = Gtk.Label(label="Page 1 / 1")
         nav_bar.pack_start(self.lbl_pdf_page, False, False, 6)
 
@@ -182,6 +190,7 @@ class DocViewer(Gtk.Box):
 
         self.scrolled_pdf = Gtk.ScrolledWindow()
         self.scrolled_pdf.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.scrolled_pdf.connect("size-allocate", self._on_pdf_size_allocate)
         self.pdf_image = Gtk.Image()
         self.pdf_image.set_margin_top(16)
         self.pdf_image.set_margin_bottom(16)
@@ -680,6 +689,18 @@ class DocViewer(Gtk.Box):
         if new_page != self.current_pdf_page:
             self._current_pdf_pixbuf = None
         self.current_pdf_page = new_page
+
+        if getattr(self, "_fit_page_mode", False):
+            try:
+                pw, ph = self.pdf_renderer.get_page_size(self.current_pdf_page)
+                curr_base_w = pw * 1.333
+                curr_base_h = ph * 1.333
+                if abs(curr_base_w - getattr(self, "_current_page_base_w", 0)) > 25 or abs(curr_base_h - getattr(self, "_current_page_base_h", 0)) > 25:
+                    self.fit_to_page()
+                    return
+            except Exception:
+                pass
+
         self._refresh_pdf_page(sync=True)
 
         if hasattr(self, "scrolled_pdf"):
@@ -777,19 +798,99 @@ class DocViewer(Gtk.Box):
     def can_zoom_out(self) -> bool:
         return self.zoom_index > 0
 
+    def _on_pdf_size_allocate(self, widget, allocation):
+        if getattr(self, "_fit_page_mode", False):
+            cur_w = allocation.width
+            cur_h = allocation.height
+            last_w = getattr(self, "_last_allocated_w", 0)
+            last_h = getattr(self, "_last_allocated_h", 0)
+            if abs(cur_w - last_w) > 20 or abs(cur_h - last_h) > 20:
+                self._last_allocated_w = cur_w
+                self._last_allocated_h = cur_h
+                self.fit_to_page()
+
+    def fit_to_page(self):
+        """Scale PDF page so the entire page fits cleanly in the viewport (Full Page View)."""
+        self._fit_page_mode = True
+        if self.get_view_mode() != "pdf" or not self.pdf_renderer or self.pdf_renderer.page_count == 0:
+            return
+
+        alloc = self.scrolled_pdf.get_allocation()
+        view_w = alloc.width
+        view_h = alloc.height
+
+        if view_w <= 50 or view_h <= 50:
+            self._fit_page_pending = True
+            disp = Gdk.Display.get_default()
+            if disp:
+                mon = disp.get_primary_monitor() or (disp.get_monitor(0) if disp.get_n_monitors() > 0 else None)
+                if mon:
+                    geom = mon.get_geometry()
+                    view_w = max(400, geom.width - 48)
+                    view_h = max(300, geom.height - 180)
+                else:
+                    view_w, view_h = 1000, 700
+            else:
+                view_w, view_h = 1000, 700
+
+        try:
+            pw, ph = self.pdf_renderer.get_page_size(self.current_pdf_page)
+            base_w = pw * 1.333
+            base_h = ph * 1.333
+            self._current_page_base_w = base_w
+            self._current_page_base_h = base_h
+        except Exception:
+            base_w = getattr(self, "_current_page_base_w", 595.0 * 1.333)
+            base_h = getattr(self, "_current_page_base_h", 842.0 * 1.333)
+
+        if base_w <= 0 or base_h <= 0:
+            return
+
+        avail_w = max(50.0, float(view_w) - 36.0)
+        avail_h = max(50.0, float(view_h) - 36.0)
+
+        scale_w = avail_w / float(base_w)
+        scale_h = avail_h / float(base_h)
+        target_scale = min(scale_w, scale_h)
+
+        best_idx = 0
+        for i, step in enumerate(self.ZOOM_STEPS):
+            if step <= target_scale:
+                best_idx = i
+            else:
+                break
+
+        if hasattr(self, "scrolled_pdf"):
+            vadj = self.scrolled_pdf.get_vadjustment()
+            if vadj:
+                vadj.set_value(vadj.get_lower())
+            hadj = self.scrolled_pdf.get_hadjustment()
+            if hadj:
+                hadj.set_value(hadj.get_lower())
+
+        if self.zoom_index != best_idx:
+            self.zoom_index = best_idx
+            self.apply_retina_font()
+            self.emit("zoom-changed", self.get_zoom_percent())
+        else:
+            self._refresh_pdf_page(sync=True)
+
     def zoom_in(self):
+        self._fit_page_mode = False
         if self.can_zoom_in():
             self.zoom_index += 1
             self.apply_retina_font()
             self.emit("zoom-changed", self.get_zoom_percent())
 
     def zoom_out(self):
+        self._fit_page_mode = False
         if self.can_zoom_out():
             self.zoom_index -= 1
             self.apply_retina_font()
             self.emit("zoom-changed", self.get_zoom_percent())
 
     def zoom_reset(self):
+        self._fit_page_mode = False
         self.zoom_index = self.DEFAULT_ZOOM_INDEX
         self.apply_retina_font()
         self.emit("zoom-changed", self.get_zoom_percent())
@@ -961,7 +1062,9 @@ class DocViewer(Gtk.Box):
             self.current_pdf_page = 1
             self.set_read_only(True)
             self.set_view_mode("rendered")
-            self._refresh_pdf_page(sync=True)
+            self._fit_page_mode = True
+            self._fit_page_pending = True
+            self.fit_to_page()
             self._update_pan_cursor(gripping=False)
         elif doc_type in ("markdown", "rst", "html", "csv", "odt", "docx"):
             if doc_type in ("odt", "docx"):

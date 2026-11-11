@@ -26,6 +26,7 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 
 ### Retina Vision & Navigation
 - **Dynamic Retina Zooming**: Scale both Rendered Reader View, PDF pages, and Source View fluidly from **50% up to 300%** using `Ctrl + +`, `Ctrl + -`, `Ctrl + 0`, or **`Ctrl + Mouse Wheel`**, with accurate real-time percentage indicators on the HeaderBar and Status Bar.
+- **Full Page View on Launch (`F5` / `Ctrl + 9`)**: Double-clicking a PDF or compatible document file opens DocuPad maximized in Full Page View with the entire page fitted to the window and the outline sidebar tucked away for a distraction-free reading experience.
 - **Interactive Mouse Grip & Panning**: When zoomed in on PDF documents, click and drag with the mouse to grip and smoothly pan around the page in any direction. Shows an open hand (`grab`) cursor when hovering over zoomed pages and an active gripping hand (`grabbing`) cursor while dragging.
 - **Integrated Search & Replace (`Ctrl + F` / `Ctrl + H`)**: Live match counting, case sensitivity, whole-word matching, and regular expressions.
 - **HTML Export**: Export any Markdown, RST, CSV, or text document to a standalone styled dark-mode HTML file (*Menu -> Export Document to HTML...*).
@@ -61,6 +62,7 @@ The installer automatically:
 | `Ctrl + G` | **Go to Line** |
 | `Ctrl + +` / `Ctrl + -` | **Retina Zoom In / Out** |
 | `Ctrl + 0` | **Reset Retina Zoom (100%)** |
+| `F5` / `Ctrl + 9` | **Full Page View / Fit Page** |
 | `Page Up` / `Page Down` | **Previous / Next PDF Page** |
 | `Scroll Wheel` | **Next / Previous PDF Page (in PDF View)** |
 | `Home` / `End` | **First / Last PDF Page (in PDF View)** |

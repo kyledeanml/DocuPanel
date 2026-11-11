@@ -581,6 +581,119 @@ class TestViewerAndAssets(unittest.TestCase):
 
         win.destroy()
 
+    def test_start_in_full_page_view_on_double_click_pdf_and_compatible(self):
+        """Test DocuPad starting in full page view (maximized, sidebar hidden, fit page) when opening PDF/compatible files."""
+        import cairo, time
+        from gi.repository import Gtk, Gdk
+        has_display, _ = Gtk.init_check()
+        if not has_display:
+            self.skipTest("Requires display connection for full page view test")
+
+        from docupad import DocuPadWindow
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_fullpage_")
+        pdf_path = os.path.join(tmp_dir, "sample_document.pdf")
+        md_path = os.path.join(tmp_dir, "sample_notes.md")
+
+        try:
+            # Create a 2-page test PDF
+            surf = cairo.PDFSurface(pdf_path, 600, 800)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0.2, 0.4, 0.6)
+            cr.paint()
+            surf.show_page()
+            cr.set_source_rgb(0.3, 0.5, 0.7)
+            cr.paint()
+            surf.show_page()
+            surf.finish()
+
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write("# Full Page Notes\n\nTesting rendered reader view.")
+
+            # 1. Test opening PDF starts in Full Page View
+            win_pdf = DocuPadWindow(initial_files=[pdf_path])
+            win_pdf.show_all()
+            win_pdf.present()
+
+            t0 = time.time()
+            while time.time() - t0 < 0.2:
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+                time.sleep(0.01)
+
+            # Window is maximized
+            self.assertTrue(win_pdf.is_maximized())
+            # Outline sidebar starts closed for clean full-width page view
+            self.assertFalse(win_pdf.toc_box.get_visible())
+            self.assertFalse(win_pdf.btn_toggle_toc.get_active())
+
+            viewer_pdf = win_pdf.get_current_viewer()
+            self.assertEqual(viewer_pdf.get_view_mode(), "pdf")
+            self.assertTrue(viewer_pdf._fit_page_mode)
+
+            # Page is fitted to page view without overflowing viewport
+            alloc = viewer_pdf.scrolled_pdf.get_allocation()
+            self.assertGreater(alloc.width, 200)
+            self.assertGreater(alloc.height, 200)
+
+            scale = viewer_pdf.ZOOM_STEPS[viewer_pdf.zoom_index]
+            rendered_h = viewer_pdf._current_page_base_h * scale
+            rendered_w = viewer_pdf._current_page_base_w * scale
+            self.assertLessEqual(rendered_h, alloc.height)
+            self.assertLessEqual(rendered_w, alloc.width)
+
+            # Turning to next page maintains fit_page_mode
+            viewer_pdf.goto_pdf_page(2)
+            self.assertEqual(viewer_pdf.current_pdf_page, 2)
+            self.assertTrue(viewer_pdf._fit_page_mode)
+
+            # Full Page button works
+            viewer_pdf.zoom_in()
+            self.assertFalse(viewer_pdf._fit_page_mode)
+            win_pdf.zoom_fit_page()
+            self.assertTrue(viewer_pdf._fit_page_mode)
+
+            win_pdf.destroy()
+
+            # 2. Test opening Markdown file starts in Full Page Reader View
+            win_md = DocuPadWindow(initial_files=[md_path])
+            win_md.show_all()
+            win_md.present()
+
+            t0 = time.time()
+            while time.time() - t0 < 0.2:
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+                time.sleep(0.01)
+
+            self.assertTrue(win_md.is_maximized())
+            self.assertFalse(win_md.toc_box.get_visible())
+            viewer_md = win_md.get_current_viewer()
+            self.assertEqual(viewer_md.get_view_mode(), "rendered")
+
+            win_md.destroy()
+
+            # 3. Test opening without files starts in normal unmaximized window in Source View
+            win_empty = DocuPadWindow()
+            self.assertFalse(win_empty.is_maximized())
+            self.assertEqual(win_empty.get_current_viewer().get_view_mode(), "source")
+            win_empty.destroy()
+
+        finally:
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                except OSError:
+                    pass
+            if os.path.exists(md_path):
+                try:
+                    os.remove(md_path)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

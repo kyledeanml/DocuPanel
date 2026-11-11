@@ -71,6 +71,10 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         self.connect("key-press-event", self._on_window_key_press_event)
         self.connect("delete-event", self._on_delete_event)
 
+        has_initial_files = bool(initial_files)
+        if has_initial_files:
+            self.maximize()
+
         if initial_files:
             for f in initial_files:
                 self.new_tab(f)
@@ -78,6 +82,8 @@ class DocuPadWindow(Gtk.ApplicationWindow):
             self.new_tab()
 
         self.show_all()
+        if hasattr(self, "toc_box") and not self.btn_toggle_toc.get_active():
+            self.toc_box.set_visible(False)
         self.search_bar.set_reveal_child(False)
 
     def _on_window_scroll_event(self, widget, event):
@@ -269,7 +275,7 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         mode_box.set_margin_start(8)
 
         self.btn_toggle_toc = Gtk.ToggleButton(label="Outline")
-        self.btn_toggle_toc.set_active(True)
+        self.btn_toggle_toc.set_active(False)
         self.btn_toggle_toc.set_tooltip_text("Toggle Document Outline / Table of Contents Sidebar (F9)")
         self.btn_toggle_toc.connect("toggled", self._on_toggle_toc)
         mode_box.pack_start(self.btn_toggle_toc, False, False, 0)
@@ -311,6 +317,11 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         self.btn_zoom_in.set_tooltip_text("Retina Zoom In (Ctrl++)")
         self.btn_zoom_in.connect("clicked", lambda b: self.zoom_active(out=False))
         zoom_box.pack_start(self.btn_zoom_in, False, False, 0)
+
+        self.btn_zoom_fit = Gtk.Button.new_from_icon_name("zoom-fit-best-symbolic", Gtk.IconSize.BUTTON)
+        self.btn_zoom_fit.set_tooltip_text("Full Page View / Fit Page (F5 / Ctrl+9)")
+        self.btn_zoom_fit.connect("clicked", lambda b: self.zoom_fit_page())
+        zoom_box.pack_start(self.btn_zoom_fit, False, False, 0)
 
         hb.pack_end(zoom_box)
 
@@ -394,6 +405,8 @@ class DocuPadWindow(Gtk.ApplicationWindow):
 
         # Left Pane: Document Outline / Table of Contents
         self.toc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.toc_box.set_no_show_all(True)
+        self.toc_box.set_visible(False)
         toc_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         toc_header.set_margin_start(10)
         toc_header.set_margin_end(8)
@@ -714,6 +727,16 @@ class DocuPadWindow(Gtk.ApplicationWindow):
             viewer.zoom_in()
         self._update_zoom_ui(viewer)
 
+    def zoom_fit_page(self):
+        viewer = self.get_current_viewer()
+        if not viewer:
+            return
+        if viewer.get_view_mode() == "pdf":
+            viewer.fit_to_page()
+        else:
+            viewer.zoom_reset()
+        self._update_zoom_ui(viewer)
+
     # --------------------------------------------------------------------------
     # File Dialogs & Companion Integration
     # --------------------------------------------------------------------------
@@ -951,10 +974,12 @@ class DocuPadWindow(Gtk.ApplicationWindow):
             ("r", Gdk.ModifierType.CONTROL_MASK, lambda: self.btn_read_only.set_active(not self.btn_read_only.get_active())),
             ("F6", 0, lambda: self._trigger_toggle_mode()),
             ("F9", 0, lambda: self.btn_toggle_toc.set_active(not self.btn_toggle_toc.get_active())),
+            ("F5", 0, lambda: self.zoom_fit_page()),
             ("plus", Gdk.ModifierType.CONTROL_MASK, lambda: self.zoom_active(out=False)),
             ("equal", Gdk.ModifierType.CONTROL_MASK, lambda: self.zoom_active(out=False)),
             ("minus", Gdk.ModifierType.CONTROL_MASK, lambda: self.zoom_active(out=True)),
             ("0", Gdk.ModifierType.CONTROL_MASK, lambda: self.zoom_active(reset=True)),
+            ("9", Gdk.ModifierType.CONTROL_MASK, lambda: self.zoom_fit_page()),
         ]
         for key_str, mod, callback in shortcuts:
             kv = Gdk.keyval_from_name(key_str)
