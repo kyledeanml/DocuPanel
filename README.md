@@ -60,5 +60,8 @@ The installer automatically:
 | `Ctrl + G` | **Go to Line** |
 | `Ctrl + +` / `Ctrl + -` | **Retina Zoom In / Out** |
 | `Ctrl + 0` | **Reset Retina Zoom (100%)** |
+| `Page Up` / `Page Down` | **Previous / Next PDF Page** |
+| `Scroll Wheel` | **Next / Previous PDF Page (in PDF View)** |
+| `Home` / `End` | **First / Last PDF Page (in PDF View)** |
 | `Ctrl + Scroll Wheel` | **Smooth Real-Time Zooming** |
 | `Ctrl + Q` | **Quit Application** |

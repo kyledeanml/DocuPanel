@@ -67,6 +67,7 @@ class DocuPadWindow(Gtk.ApplicationWindow):
 
         self.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
         self.connect("scroll-event", self._on_window_scroll_event)
+        self.connect("key-press-event", self._on_window_key_press_event)
         self.connect("delete-event", self._on_delete_event)
 
         if initial_files:
@@ -82,6 +83,15 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         viewer = self.get_current_viewer()
         if viewer is not None:
             return viewer._on_scroll_event(widget, event)
+        return False
+
+    def _on_window_key_press_event(self, widget, event):
+        focus_w = self.get_focus()
+        if isinstance(focus_w, Gtk.Entry):
+            return False
+        viewer = self.get_current_viewer()
+        if viewer is not None:
+            return viewer._on_key_press(widget, event)
         return False
 
     def _apply_dark_neon_theme(self):

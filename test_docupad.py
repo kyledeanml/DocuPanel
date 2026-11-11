@@ -261,7 +261,7 @@ class TestViewerAndAssets(unittest.TestCase):
             renderer.cleanup()
 
             # 3. Test DocViewer load_file populates pdf_image pixbuf when display is present
-            from gi.repository import Gtk
+            from gi.repository import Gtk, Gdk
             has_display, _ = Gtk.init_check()
             if has_display:
                 viewer = DocViewer()
@@ -270,8 +270,151 @@ class TestViewerAndAssets(unittest.TestCase):
                 self.assertEqual(viewer.get_view_mode(), "pdf")
                 self.assertIsNotNone(viewer.pdf_image.get_pixbuf())
                 self.assertGreater(viewer.pdf_image.get_pixbuf().get_width(), 100)
+                # Verify clean tooltips with no broken PageUp/PageDown references
+                self.assertEqual(viewer.btn_pdf_prev.get_tooltip_text(), "Previous Page")
+                self.assertEqual(viewer.btn_pdf_next.get_tooltip_text(), "Next Page")
                 if viewer.pdf_renderer:
                     viewer.pdf_renderer.cleanup()
+        finally:
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                    os.rmdir(tmp_dir)
+                except OSError:
+                    pass
+
+    def test_pdf_mouse_wheel_and_keyboard_page_navigation(self):
+        """Test simple mouse wheel scroll up/down and PageUp/PageDown keyboard navigation."""
+        import cairo
+        from gi.repository import Gtk, Gdk
+        has_display, _ = Gtk.init_check()
+        if not has_display:
+            self.skipTest("Requires display connection for GtkWidget test")
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_multipage_")
+        pdf_path = os.path.join(tmp_dir, "multipage_book.pdf")
+        try:
+            # Create a 3-page PDF
+            surf = cairo.PDFSurface(pdf_path, 400, 300)
+            cr = cairo.Context(surf)
+            for p in range(1, 4):
+                cr.set_source_rgb(0.1 * p, 0.2 * p, 0.3 * p)
+                cr.paint()
+                cr.set_source_rgb(1.0, 1.0, 1.0)
+                cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+                cr.set_font_size(32)
+                cr.move_to(50, 100)
+                cr.show_text(f"Page {p}")
+                surf.show_page()
+            surf.finish()
+
+            viewer = DocViewer()
+            viewer.load_file(pdf_path)
+            self.assertEqual(viewer.current_pdf_page, 1)
+            self.assertEqual(viewer.pdf_renderer.page_count, 3)
+
+            # Helper to create mock event
+            class MockEvent:
+                def __init__(self, **kwargs):
+                    for k, v in kwargs.items():
+                        setattr(self, k, v)
+
+            # 1. Test mouse wheel scroll DOWN changes to page 2
+            ev_down = MockEvent(
+                state=0,
+                time=1000,
+                direction=Gdk.ScrollDirection.DOWN
+            )
+            handled = viewer._on_scroll_event(viewer, ev_down)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 2)
+
+            # 2. Test mouse wheel scroll DOWN changes to page 3
+            ev_down2 = MockEvent(
+                state=0,
+                time=1200,
+                direction=Gdk.ScrollDirection.DOWN
+            )
+            viewer._on_scroll_event(viewer, ev_down2)
+            self.assertEqual(viewer.current_pdf_page, 3)
+
+            # 3. Test mouse wheel scroll UP changes back to page 2
+            ev_up = MockEvent(
+                state=0,
+                time=1400,
+                direction=Gdk.ScrollDirection.UP
+            )
+            handled = viewer._on_scroll_event(viewer, ev_up)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 2)
+
+            # 4. Test smooth mouse wheel scroll DOWN (delta_y > 0)
+            ev_smooth_down = MockEvent(
+                state=0,
+                time=1600,
+                direction=Gdk.ScrollDirection.SMOOTH,
+                delta_y=0.8,
+                get_scroll_deltas=lambda: (True, 0.0, 0.8)
+            )
+            viewer._on_scroll_event(viewer, ev_smooth_down)
+            self.assertEqual(viewer.current_pdf_page, 3)
+
+            # 5. Test Keyboard Page_Up changes back to page 2
+            ev_key_pup = MockEvent(
+                state=0,
+                keyval=Gdk.KEY_Page_Up
+            )
+            handled = viewer._on_key_press(viewer, ev_key_pup)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 2)
+
+            # 6. Test Keyboard Page_Down changes to page 3
+            ev_key_pdown = MockEvent(
+                state=0,
+                keyval=Gdk.KEY_Page_Down
+            )
+            handled = viewer._on_key_press(viewer, ev_key_pdown)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 3)
+
+            # 7. Test Keyboard Home jumps to page 1
+            ev_key_home = MockEvent(
+                state=0,
+                keyval=Gdk.KEY_Home
+            )
+            handled = viewer._on_key_press(viewer, ev_key_home)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 1)
+
+            # 8. Test Keyboard End jumps to page 3
+            ev_key_end = MockEvent(
+                state=0,
+                keyval=Gdk.KEY_End
+            )
+            handled = viewer._on_key_press(viewer, ev_key_end)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 3)
+
+            # 9. Test Keyboard Left arrow moves to page 2
+            ev_key_left = MockEvent(
+                state=0,
+                keyval=Gdk.KEY_Left
+            )
+            handled = viewer._on_key_press(viewer, ev_key_left)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 2)
+
+            # 10. Test Keyboard Right arrow moves to page 3
+            ev_key_right = MockEvent(
+                state=0,
+                keyval=Gdk.KEY_Right
+            )
+            handled = viewer._on_key_press(viewer, ev_key_right)
+            self.assertTrue(handled)
+            self.assertEqual(viewer.current_pdf_page, 3)
+
+            if viewer.pdf_renderer:
+                viewer.pdf_renderer.cleanup()
         finally:
             if os.path.exists(pdf_path):
                 try:

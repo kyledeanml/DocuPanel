@@ -166,12 +166,12 @@ class DocViewer(Gtk.Box):
         nav_bar.set_margin_bottom(6)
 
         self.btn_pdf_prev = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_pdf_prev.set_tooltip_text("Previous PDF Page (PageUp)")
+        self.btn_pdf_prev.set_tooltip_text("Previous Page")
         self.btn_pdf_prev.connect("clicked", lambda b: self.goto_pdf_page(self.current_pdf_page - 1))
         nav_bar.pack_start(self.btn_pdf_prev, False, False, 0)
 
         self.btn_pdf_next = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_pdf_next.set_tooltip_text("Next PDF Page (PageDown)")
+        self.btn_pdf_next.set_tooltip_text("Next Page")
         self.btn_pdf_next.connect("clicked", lambda b: self.goto_pdf_page(self.current_pdf_page + 1))
         nav_bar.pack_start(self.btn_pdf_next, False, False, 0)
 
@@ -187,7 +187,10 @@ class DocViewer(Gtk.Box):
         self.pdf_image.set_margin_bottom(16)
         self.pdf_image.set_margin_start(16)
         self.pdf_image.set_margin_end(16)
-        self.scrolled_pdf.add(self.pdf_image)
+
+        self.pdf_event_box = Gtk.EventBox()
+        self.pdf_event_box.add(self.pdf_image)
+        self.scrolled_pdf.add(self.pdf_event_box)
         pdf_box.pack_start(self.scrolled_pdf, True, True, 0)
 
         self.view_stack.add_named(pdf_box, "pdf")
@@ -247,6 +250,8 @@ class DocViewer(Gtk.Box):
 
         scroll_mask = Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK
         targets = [self, self.scrolled_source, self.source_view, self.scrolled_pdf]
+        if hasattr(self, "pdf_event_box") and self.pdf_event_box is not None:
+            targets.append(self.pdf_event_box)
         if self.scrolled_rendered is not None:
             targets.append(self.scrolled_rendered)
         if hasattr(self, "fallback_preview") and self.fallback_preview is not None:
@@ -255,6 +260,12 @@ class DocViewer(Gtk.Box):
         for w in targets:
             w.add_events(scroll_mask)
             w.connect("scroll-event", self._on_scroll_event)
+
+        key_targets = [self, self.scrolled_pdf]
+        if hasattr(self, "pdf_event_box") and self.pdf_event_box is not None:
+            key_targets.append(self.pdf_event_box)
+        for kw in key_targets:
+            kw.connect("key-press-event", self._on_key_press)
 
         if HAS_WEBKIT and self.web_view is not None:
             self.web_view.add_events(scroll_mask)
@@ -377,6 +388,85 @@ class DocViewer(Gtk.Box):
                         self.zoom_out()
                     return True
                 return True
+
+        # Simple mouse wheel scroll up or down (without Control key)
+        if self.get_view_mode() == "pdf":
+            ev_time = getattr(event, "time", 0)
+            last_page_time = getattr(self, "_last_page_scroll_time", 0)
+
+            direction = getattr(event, "direction", None)
+            if direction is None and hasattr(event, "get_scroll_direction"):
+                ok_d, d = event.get_scroll_direction()
+                if ok_d:
+                    direction = d
+
+            time_diff = (ev_time - last_page_time) if (ev_time and last_page_time) else 999
+            if time_diff < 0:
+                time_diff = 999
+
+            if direction == Gdk.ScrollDirection.UP:
+                if time_diff >= 120:
+                    self._last_page_scroll_time = ev_time
+                    self.goto_pdf_page(self.current_pdf_page - 1)
+                return True
+            elif direction == Gdk.ScrollDirection.DOWN:
+                if time_diff >= 120:
+                    self._last_page_scroll_time = ev_time
+                    self.goto_pdf_page(self.current_pdf_page + 1)
+                return True
+            elif direction == Gdk.ScrollDirection.SMOOTH:
+                res = event.get_scroll_deltas() if hasattr(event, "get_scroll_deltas") else ()
+                dy = res[-1] if res else getattr(event, "delta_y", 0.0)
+                if not hasattr(self, "_scroll_delta_accum"):
+                    self._scroll_delta_accum = 0.0
+                self._scroll_delta_accum += dy
+
+                if self._scroll_delta_accum <= -0.3 and time_diff >= 120:
+                    self._last_page_scroll_time = ev_time
+                    self._scroll_delta_accum = 0.0
+                    self.goto_pdf_page(self.current_pdf_page - 1)
+                    return True
+                elif self._scroll_delta_accum >= 0.3 and time_diff >= 120:
+                    self._last_page_scroll_time = ev_time
+                    self._scroll_delta_accum = 0.0
+                    self.goto_pdf_page(self.current_pdf_page + 1)
+                    return True
+                elif abs(self._scroll_delta_accum) >= 0.3:
+                    self._scroll_delta_accum = 0.0
+                    return True
+                return True
+
+        return False
+
+    def _on_key_press(self, widget, event):
+        """Keyboard navigation for PDF pages (Page Up, Page Down, Arrow keys, Home, End)."""
+        if self.get_view_mode() == "pdf":
+            state = getattr(event, "state", 0)
+            mod_mask = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK
+            if not (state & mod_mask):
+                kv = getattr(event, "keyval", 0)
+                is_shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+                # Previous Page: Page_Up, KP_Page_Up, Prior, Left, Backspace, Shift+Space
+                if kv in (Gdk.KEY_Page_Up, Gdk.KEY_KP_Page_Up, Gdk.KEY_Prior, Gdk.KEY_Left, Gdk.KEY_BackSpace) or (kv == Gdk.KEY_space and is_shift):
+                    self.goto_pdf_page(self.current_pdf_page - 1)
+                    return True
+
+                # Next Page: Page_Down, KP_Page_Down, Next, Right, Space
+                elif kv in (Gdk.KEY_Page_Down, Gdk.KEY_KP_Page_Down, Gdk.KEY_Next, Gdk.KEY_Right, Gdk.KEY_space):
+                    self.goto_pdf_page(self.current_pdf_page + 1)
+                    return True
+
+                # First Page: Home, KP_Home
+                elif kv in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
+                    self.goto_pdf_page(1)
+                    return True
+
+                # Last Page: End, KP_End
+                elif kv in (Gdk.KEY_End, Gdk.KEY_KP_End):
+                    if self.pdf_renderer and self.pdf_renderer.page_count > 0:
+                        self.goto_pdf_page(self.pdf_renderer.page_count)
+                    return True
         return False
 
     # --------------------------------------------------------------------------
@@ -425,6 +515,14 @@ class DocViewer(Gtk.Box):
             self._current_pdf_pixbuf = None
         self.current_pdf_page = new_page
         self._refresh_pdf_page(sync=True)
+
+        if hasattr(self, "scrolled_pdf"):
+            vadj = self.scrolled_pdf.get_vadjustment()
+            if vadj:
+                vadj.set_value(vadj.get_lower())
+            hadj = self.scrolled_pdf.get_hadjustment()
+            if hadj:
+                hadj.set_value(hadj.get_lower())
 
     def _refresh_pdf_page(self, sync: bool = False):
         if not self.pdf_renderer:
