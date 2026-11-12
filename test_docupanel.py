@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit and Integration Tests for DocuPad
+Unit and Integration Tests for DocuPanel
 Tests document parsing, Markdown/CSV HTML rendering, outline extraction,
 Retina zoom steps, and SVG / desktop asset integrity.
 """
@@ -40,9 +40,9 @@ class TestDocumentParserAndOutline(unittest.TestCase):
         self.assertEqual(outline[2].level, 3)
 
     def test_markdown_to_html_rendering(self):
-        md = "# DocuPad Header\n\nParagraph with **bold** and `code`.\n\n| Col1 | Col2 |\n|---|---|\n| A | B |\n"
+        md = "# DocuPanel Header\n\nParagraph with **bold** and `code`.\n\n| Col1 | Col2 |\n|---|---|\n| A | B |\n"
         html_out = DocumentParser.render_markdown_to_html(md, doc_type="markdown")
-        self.assertIn("<h1>DocuPad Header</h1>", html_out)
+        self.assertIn("<h1>DocuPanel Header</h1>", html_out)
         self.assertIn("<strong>bold</strong>", html_out)
         self.assertIn("<code>code</code>", html_out)
         self.assertIn("<table>", html_out)
@@ -168,12 +168,12 @@ class TestViewerAndAssets(unittest.TestCase):
         self.assertTrue(DocViewer._on_scroll_event(dummy, None, ev_down))
         self.assertEqual(dummy.zoomed, ["in", "out"])
 
-    def test_docupad_scheme_available(self):
+    def test_docupanel_scheme_available(self):
         manager = GtkSource.StyleSchemeManager.get_default()
-        self.assertIn("docupad-neon", manager.get_scheme_ids())
+        self.assertIn("docupanel-neon", manager.get_scheme_ids())
 
     def test_svg_and_watermark_validity(self):
-        svg_path = os.path.join(self.base_dir, "docupad.svg")
+        svg_path = os.path.join(self.base_dir, "docupanel.svg")
         self.assertTrue(os.path.exists(svg_path))
         tree = ET.parse(svg_path)
         self.assertTrue(tree.getroot().tag.endswith("svg"))
@@ -181,12 +181,12 @@ class TestViewerAndAssets(unittest.TestCase):
         self.assertIsNotNone(DocViewer._get_watermark_pixbuf())
 
     def test_desktop_and_scripts(self):
-        desktop_path = os.path.join(self.base_dir, "docupad.desktop")
+        desktop_path = os.path.join(self.base_dir, "docupanel.desktop")
         self.assertTrue(os.path.exists(desktop_path))
         with open(desktop_path, "r", encoding="utf-8") as f:
             content = f.read()
-        self.assertIn("Name=DocuPad", content)
-        self.assertIn("StartupWMClass=docupad", content)
+        self.assertIn("Name=DocuPanel", content)
+        self.assertIn("StartupWMClass=docupanel", content)
 
     def test_pdf_renderer_and_poppler_bridge(self):
         from doc_tools import PDFPageRenderer, PopplerBridge
@@ -196,11 +196,11 @@ class TestViewerAndAssets(unittest.TestCase):
         pdf_path = "/home/bluechile/Games/Heroic/PillarsOfEternity/CollectorsBook/pe-collectors-book.pdf"
         if not os.path.isfile(pdf_path):
             import cairo
-            pdf_path = os.path.join(tempfile.gettempdir(), "test_docupad.pdf")
+            pdf_path = os.path.join(tempfile.gettempdir(), "test_docupanel.pdf")
             surf = cairo.PDFSurface(pdf_path, 200, 200)
             cr = cairo.Context(surf)
             cr.set_source_rgb(0, 0, 0)
-            cr.show_text("DocuPad Test")
+            cr.show_text("DocuPanel Test")
             surf.show_page()
             surf.finish()
 
@@ -223,7 +223,7 @@ class TestViewerAndAssets(unittest.TestCase):
         import cairo
         from doc_tools import PDFPageRenderer, PopplerBridge
 
-        tmp_dir = tempfile.mkdtemp(prefix="docupad test spaces ")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel test spaces ")
         pdf_path = os.path.join(tmp_dir, "Mini Book Pages - 188 x 171 With cover HR3.pdf")
         try:
             surf = cairo.PDFSurface(pdf_path, 300, 400)
@@ -298,7 +298,7 @@ class TestViewerAndAssets(unittest.TestCase):
         if not has_display:
             self.skipTest("Requires display connection for GtkWidget test")
 
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_multipage_")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_multipage_")
         pdf_path = os.path.join(tmp_dir, "multipage_book.pdf")
         try:
             # Create a 3-page PDF
@@ -438,7 +438,7 @@ class TestViewerAndAssets(unittest.TestCase):
         if not has_display:
             self.skipTest("Requires display connection for GtkWidget test")
 
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_pan_")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_pan_")
         pdf_path = os.path.join(tmp_dir, "large_page.pdf")
         try:
             # Create a large page PDF
@@ -523,10 +523,10 @@ class TestViewerAndAssets(unittest.TestCase):
         from gi.repository import Gtk
         has_display, _ = Gtk.init_check()
         if not has_display:
-            self.skipTest("Requires display connection for DocuPadWindow test")
+            self.skipTest("Requires display connection for DocuPanelWindow test")
 
-        from docupad import DocuPadWindow
-        win = DocuPadWindow()
+        from docupanel import DocuPanelWindow
+        win = DocuPanelWindow()
         viewer = win.get_current_viewer()
         self.assertIsNotNone(viewer)
 
@@ -586,15 +586,15 @@ class TestViewerAndAssets(unittest.TestCase):
         win.destroy()
 
     def test_start_in_full_page_view_on_double_click_pdf_and_compatible(self):
-        """Test DocuPad starting in full page view (maximized, sidebar hidden, fit page) when opening PDF/compatible files."""
+        """Test DocuPanel starting in full page view (maximized, sidebar hidden, fit page) when opening PDF/compatible files."""
         import cairo, time
         from gi.repository import Gtk, Gdk
         has_display, _ = Gtk.init_check()
         if not has_display:
             self.skipTest("Requires display connection for full page view test")
 
-        from docupad import DocuPadWindow
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_fullpage_")
+        from docupanel import DocuPanelWindow
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_fullpage_")
         pdf_path = os.path.join(tmp_dir, "sample_document.pdf")
         md_path = os.path.join(tmp_dir, "sample_notes.md")
 
@@ -614,7 +614,7 @@ class TestViewerAndAssets(unittest.TestCase):
                 f.write("# Full Page Notes\n\nTesting rendered reader view.")
 
             # 1. Test opening PDF starts in Full Page View
-            win_pdf = DocuPadWindow(initial_files=[pdf_path])
+            win_pdf = DocuPanelWindow(initial_files=[pdf_path])
             win_pdf.show_all()
             win_pdf.present()
 
@@ -659,7 +659,7 @@ class TestViewerAndAssets(unittest.TestCase):
             win_pdf.destroy()
 
             # 2. Test opening Markdown file starts in Full Page Reader View
-            win_md = DocuPadWindow(initial_files=[md_path])
+            win_md = DocuPanelWindow(initial_files=[md_path])
             win_md.show_all()
             win_md.present()
 
@@ -677,7 +677,7 @@ class TestViewerAndAssets(unittest.TestCase):
             win_md.destroy()
 
             # 3. Test opening without files starts in normal unmaximized window in Source View
-            win_empty = DocuPadWindow()
+            win_empty = DocuPanelWindow()
             self.assertFalse(win_empty.is_maximized())
             self.assertEqual(win_empty.get_current_viewer().get_view_mode(), "source")
             win_empty.destroy()
@@ -700,8 +700,8 @@ class TestViewerAndAssets(unittest.TestCase):
 
     def test_mouse_grip_and_pan_with_real_gdk_events_and_fit_state(self):
         """Test mouse grip and panning with real Gdk.Event objects and accurate cursor/pannable state."""
-        from docupad import DocuPadWindow
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_pan_test_")
+        from docupanel import DocuPanelWindow
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_pan_test_")
         pdf_path = os.path.join(tmp_dir, "pantest.pdf")
         try:
             # Create a 2-page test PDF with standard A4 dimensions (595x842)
@@ -714,7 +714,7 @@ class TestViewerAndAssets(unittest.TestCase):
             surf.show_page()
             surf.finish()
 
-            win = DocuPadWindow(initial_files=[pdf_path])
+            win = DocuPanelWindow(initial_files=[pdf_path])
             win.show_all()
 
             for _ in range(50):
@@ -797,7 +797,7 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
     """Test PDF text selection, Cairo overlays, clipboard copying, and Ctrl+Click hyperlinks."""
 
     def test_pdf_text_selection_and_expansion(self):
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_sel_test_")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_sel_test_")
         pdf_path = os.path.join(tmp_dir, "text_test.pdf")
         try:
             surf = cairo.PDFSurface(pdf_path, 595, 842)
@@ -805,7 +805,7 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
             cr.select_font_face("Sans")
             cr.set_font_size(24)
             cr.move_to(50, 100)
-            cr.show_text("Hello DocuPad World")
+            cr.show_text("Hello DocuPanel World")
             cr.move_to(50, 140)
             cr.show_text("Second line of document")
             surf.show_page()
@@ -821,7 +821,7 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
                 while Gtk.events_pending():
                     Gtk.main_iteration_do(False)
 
-            self.assertIn("Hello DocuPad World", viewer._page_text)
+            self.assertIn("Hello DocuPanel World", viewer._page_text)
             self.assertGreater(len(viewer._page_char_rects), 10)
 
             # 1. Test character hit testing
@@ -834,9 +834,9 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
             w_start, w_end = viewer._expand_to_word(char_idx)
             self.assertEqual(viewer._page_text[w_start:w_end], "Hello")
 
-            # 3. Test line expansion: "Hello DocuPad World"
+            # 3. Test line expansion: "Hello DocuPanel World"
             l_start, l_end = viewer._expand_to_line(char_idx)
-            self.assertEqual(viewer._page_text[l_start:l_end], "Hello DocuPad World")
+            self.assertEqual(viewer._page_text[l_start:l_end], "Hello DocuPanel World")
 
             # 4. Test setting selection range
             viewer._set_pdf_selection(w_start, w_end)
@@ -881,9 +881,9 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
         viewer = DocViewer()
         sample_doc = (
             "# Links Guide\n\n"
-            "Visit our website at https://github.com/bluechile/docupad for updates.\n"
-            "Or read the [DocuPad Manual](https://docupad.org/docs) online.\n"
-            "Contact: mailto:dev@docupad.org\n"
+            "Visit our website at https://github.com/bluechile/docupanel for updates.\n"
+            "Or read the [DocuPanel Manual](https://docupanel.org/docs) online.\n"
+            "Contact: mailto:dev@docupanel.org\n"
         )
         viewer.set_text(sample_doc)
         viewer.set_view_mode("source")
@@ -894,16 +894,16 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
 
         # Test regex detection directly on text lines
         matches_urls = viewer._URL_REGEX.findall(sample_doc)
-        self.assertIn("https://github.com/bluechile/docupad", matches_urls)
-        self.assertIn("https://docupad.org/docs", matches_urls)
-        self.assertIn("mailto:dev@docupad.org", matches_urls)
+        self.assertIn("https://github.com/bluechile/docupanel", matches_urls)
+        self.assertIn("https://docupanel.org/docs", matches_urls)
+        self.assertIn("mailto:dev@docupanel.org", matches_urls)
 
         md_matches = [m.group(2) for m in viewer._MD_LINK_REGEX.finditer(sample_doc)]
-        self.assertIn("https://docupad.org/docs", md_matches)
+        self.assertIn("https://docupanel.org/docs", md_matches)
 
         # Test updating cursor with Ctrl modifier
-        viewer._update_source_cursor(is_ctrl=True, url="https://github.com/bluechile/docupad")
-        self.assertEqual(viewer.source_view.get_tooltip_text(), "Ctrl + Click to follow link: https://github.com/bluechile/docupad")
+        viewer._update_source_cursor(is_ctrl=True, url="https://github.com/bluechile/docupanel")
+        self.assertEqual(viewer.source_view.get_tooltip_text(), "Ctrl + Click to follow link: https://github.com/bluechile/docupanel")
 
         viewer._update_source_cursor(is_ctrl=False, url=None)
         self.assertIsNone(viewer.source_view.get_tooltip_text())
@@ -932,14 +932,14 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
     def test_pdf_hyperlink_finding_and_hover(self):
         viewer = DocViewer()
         viewer._page_links = [
-            {"rect": (100.0, 200.0, 300.0, 220.0), "type": "uri", "target": "https://docupad.org", "title": "DocuPad"},
+            {"rect": (100.0, 200.0, 300.0, 220.0), "type": "uri", "target": "https://docupanel.org", "title": "DocuPanel"},
             {"rect": (100.0, 250.0, 300.0, 270.0), "type": "page", "target": 5, "title": "Chapter 5"},
         ]
 
         # 1. Hit testing inside link 1
         link1 = viewer._find_link_at(150.0, 210.0)
         self.assertIsNotNone(link1)
-        self.assertEqual(link1["target"], "https://docupad.org")
+        self.assertEqual(link1["target"], "https://docupanel.org")
         self.assertEqual(link1["type"], "uri")
 
         # 2. Hit testing inside link 2
@@ -999,9 +999,9 @@ class TestPDFChaptersAndBookmarks(unittest.TestCase):
 
     def test_autopopulate_chapters_from_toc_with_offset_and_columns(self):
         from doc_tools import PDFPageRenderer
-        from docupad import DocuPadWindow
+        from docupanel import DocuPanelWindow
 
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_toc_test_")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_toc_test_")
         pdf_path = os.path.join(tmp_dir, "blank_bookmarks_toc.pdf")
         try:
             # Build a 6-page PDF with NO embedded bookmarks:
@@ -1079,8 +1079,8 @@ class TestPDFChaptersAndBookmarks(unittest.TestCase):
             self.assertEqual(ch2_sub.page, 6)
             renderer.cleanup()
 
-            # 3. Verify DocuPadWindow Outline / Bookmarks TreeStore integration
-            win = DocuPadWindow(initial_files=[pdf_path])
+            # 3. Verify DocuPanelWindow Outline / Bookmarks TreeStore integration
+            win = DocuPanelWindow(initial_files=[pdf_path])
             for _ in range(30):
                 while Gtk.events_pending():
                     Gtk.main_iteration_do(False)
@@ -1109,7 +1109,7 @@ class TestPDFChaptersAndBookmarks(unittest.TestCase):
     def test_autopopulate_chapters_from_body_headers_when_no_toc(self):
         from doc_tools import PDFPageRenderer
 
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_bodychap_test_")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_bodychap_test_")
         pdf_path = os.path.join(tmp_dir, "body_chapters.pdf")
         try:
             surf = cairo.PDFSurface(pdf_path, 612, 792)
@@ -1156,7 +1156,7 @@ class TestPDFChaptersAndBookmarks(unittest.TestCase):
     def test_autopopulate_headings_from_typography_when_no_toc_or_chapter_word(self):
         from doc_tools import PDFPageRenderer
 
-        tmp_dir = tempfile.mkdtemp(prefix="docupad_fontchap_test_")
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_fontchap_test_")
         pdf_path = os.path.join(tmp_dir, "font_chapters.pdf")
         try:
             surf = cairo.PDFSurface(pdf_path, 612, 792)

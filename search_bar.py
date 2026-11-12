@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DocuPad - Integrated Search and Replace Bar
+DocuPanel - Integrated Search and Replace Bar
 Provides fast text search & replace with case-sensitivity, regex, and whole-word options.
 """
 

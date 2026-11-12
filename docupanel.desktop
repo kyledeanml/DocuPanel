@@ -1,16 +1,16 @@
 [Desktop Entry]
-Name=DocuPad
+Name=DocuPanel
 Comment=Document viewer & reader companion with Retina Vision, Outline sidebar, and PDF/Markdown rendering
 GenericName=Document Viewer & Reader
 Exec=run.sh %F
-Icon=docupad
+Icon=docupanel
 Terminal=false
 Type=Application
 Categories=GTK;GNOME;Office;Viewer;Utility;TextEditor;
 MimeType=text/markdown;text/x-markdown;application/pdf;text/html;text/x-rst;text/csv;application/json;application/vnd.oasis.opendocument.text;application/vnd.openxmlformats-officedocument.wordprocessingml.document;
 StartupNotify=true
-StartupWMClass=docupad
-Keywords=document;viewer;reader;markdown;pdf;rst;html;docupad;outline;retina;
+StartupWMClass=docupanel
+Keywords=document;viewer;reader;markdown;pdf;rst;html;docupanel;outline;retina;
 Actions=NewWindow;
 
 [Desktop Action NewWindow]
