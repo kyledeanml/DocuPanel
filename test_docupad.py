@@ -994,5 +994,203 @@ class TestTextSelectionAndHyperlinks(unittest.TestCase):
         self.assertEqual(opened_links, ["https://example.com/page"])
 
 
+class TestPDFChaptersAndBookmarks(unittest.TestCase):
+    """Test native PDF bookmarks and auto-populating chapters when PDF bookmarks are blank."""
+
+    def test_autopopulate_chapters_from_toc_with_offset_and_columns(self):
+        from doc_tools import PDFPageRenderer
+        from docupad import DocuPadWindow
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_toc_test_")
+        pdf_path = os.path.join(tmp_dir, "blank_bookmarks_toc.pdf")
+        try:
+            # Build a 6-page PDF with NO embedded bookmarks:
+            # p.1 = Title page, p.2 = Two-column TOC with printed pages (+2 offset), p.3 = Ch1 (printed p.1), p.5 = Ch2 (printed p.3)
+            surf = cairo.PDFSurface(pdf_path, 612, 792)
+            cr = cairo.Context(surf)
+            cr.select_font_face("Sans")
+
+            # Page 1: Cover
+            cr.set_font_size(24)
+            cr.move_to(100, 200)
+            cr.show_text("Sample Textbook")
+            surf.show_page()
+
+            # Page 2: Two-column Table of Contents
+            cr.set_font_size(18)
+            cr.move_to(200, 70)
+            cr.show_text("Table of Contents")
+
+            cr.set_font_size(11)
+            # Left column
+            cr.move_to(50, 120)
+            cr.show_text("Chapter 1: Foundations")
+            cr.move_to(50, 145)
+            cr.show_text("1.1 Basic Logic ................ 1")
+            cr.move_to(50, 170)
+            cr.show_text("1.2 Number Sets ................ 2")
+
+            # Right column (same y, large x gap)
+            cr.move_to(320, 120)
+            cr.show_text("Chapter 2: Advanced Algebra")
+            cr.move_to(320, 145)
+            cr.show_text("2.1 Polynomials ................ 3")
+            cr.move_to(320, 170)
+            cr.show_text("2.2 Factoring .................. 4")
+            surf.show_page()
+
+            # Pages 3..6: Body content with printed pages 1..4 -> offset = +2
+            body_pages = [
+                "1.1 Basic Logic",
+                "1.2 Number Sets",
+                "2.1 Polynomials",
+                "2.2 Factoring",
+            ]
+            for heading in body_pages:
+                cr.set_font_size(16)
+                cr.move_to(60, 80)
+                cr.show_text(heading)
+                cr.set_font_size(11)
+                cr.move_to(60, 120)
+                cr.show_text("Body paragraph explanation text.")
+                surf.show_page()
+
+            surf.finish()
+
+            # 1. Confirm embedded bookmarks are blank
+            renderer = PDFPageRenderer(pdf_path)
+            self.assertEqual(renderer.get_bookmarks(), [])
+
+            # 2. Confirm auto-chapters populate with offset calibration (printed 1 -> physical 3)
+            items, source = renderer.get_outline_with_source()
+            self.assertEqual(source, "auto-chapters")
+            titles = [it.title for it in items]
+            self.assertIn("Chapter 1: Foundations", titles)
+            self.assertIn("1.1 Basic Logic", titles)
+            self.assertIn("Chapter 2: Advanced Algebra", titles)
+            self.assertIn("2.2 Factoring", titles)
+
+            ch1_sub = next(it for it in items if it.title == "1.1 Basic Logic")
+            self.assertEqual(ch1_sub.level, 2)
+            self.assertEqual(ch1_sub.page, 3)
+
+            ch2_sub = next(it for it in items if it.title == "2.2 Factoring")
+            self.assertEqual(ch2_sub.level, 2)
+            self.assertEqual(ch2_sub.page, 6)
+            renderer.cleanup()
+
+            # 3. Verify DocuPadWindow Outline / Bookmarks TreeStore integration
+            win = DocuPadWindow(initial_files=[pdf_path])
+            for _ in range(30):
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+
+            self.assertIn("Auto-Populated Chapters", win.lbl_toc_source.get_text())
+            root_it = win.toc_store.get_iter_first()
+            self.assertIsNotNone(root_it)
+            self.assertEqual(win.toc_store.get_value(root_it, 0), "Chapter 1: Foundations")
+            self.assertTrue(win.toc_store.iter_has_child(root_it))
+
+            # Activate Chapter 2 row and verify PDF navigates to p.5
+            ch2_it = win.toc_store.iter_next(root_it)
+            self.assertIsNotNone(ch2_it)
+            self.assertEqual(win.toc_store.get_value(ch2_it, 0), "Chapter 2: Advanced Algebra")
+            win._on_toc_row_activated(win.toc_tree, win.toc_store.get_path(ch2_it), None)
+            self.assertEqual(win.get_current_viewer().current_pdf_page, 5)
+            win.destroy()
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+    def test_autopopulate_chapters_from_body_headers_when_no_toc(self):
+        from doc_tools import PDFPageRenderer
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_bodychap_test_")
+        pdf_path = os.path.join(tmp_dir, "body_chapters.pdf")
+        try:
+            surf = cairo.PDFSurface(pdf_path, 612, 792)
+            cr = cairo.Context(surf)
+            cr.select_font_face("Sans")
+
+            pages = [
+                ("Chapter 1: Getting Started", "Introductory text."),
+                ("Chapter 1: Getting Started", "Continued body text without new chapter."),  # running header duplicate!
+                ("Chapter 2: Core Concepts", "Second chapter text."),
+                ("Chapter 3: Summary", "Final chapter text."),
+            ]
+            for hdr, body in pages:
+                cr.set_font_size(14)
+                cr.move_to(50, 70)
+                cr.show_text(hdr)
+                cr.set_font_size(11)
+                cr.move_to(50, 110)
+                cr.show_text(body)
+                surf.show_page()
+            surf.finish()
+
+            renderer = PDFPageRenderer(pdf_path)
+            self.assertEqual(renderer.get_bookmarks(), [])
+            items, source = renderer.get_outline_with_source()
+            self.assertEqual(source, "auto-chapters")
+            self.assertEqual(
+                [(it.title, it.page) for it in items],
+                [
+                    ("Chapter 1: Getting Started", 1),
+                    ("Chapter 2: Core Concepts", 3),
+                    ("Chapter 3: Summary", 4),
+                ],
+            )
+            renderer.cleanup()
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+    def test_autopopulate_headings_from_typography_when_no_toc_or_chapter_word(self):
+        from doc_tools import PDFPageRenderer
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_fontchap_test_")
+        pdf_path = os.path.join(tmp_dir, "font_chapters.pdf")
+        try:
+            surf = cairo.PDFSurface(pdf_path, 612, 792)
+            cr = cairo.Context(surf)
+            cr.select_font_face("Sans")
+
+            for pg, heading in enumerate(["1. Overview", "2. Architecture", "3. Shortcuts"], start=1):
+                cr.set_font_size(20)
+                cr.move_to(50, 70)
+                cr.show_text(heading)
+                cr.set_font_size(10)
+                for line_i in range(6):
+                    cr.move_to(50, 120 + line_i * 20)
+                    cr.show_text(f"Normal body text line {line_i} on page {pg}.")
+                surf.show_page()
+            surf.finish()
+
+            renderer = PDFPageRenderer(pdf_path)
+            self.assertEqual(renderer.get_bookmarks(), [])
+            items, source = renderer.get_outline_with_source()
+            self.assertEqual(source, "auto-chapters")
+            self.assertEqual(
+                [(it.title, it.page) for it in items],
+                [("1. Overview", 1), ("2. Architecture", 2), ("3. Shortcuts", 3)],
+            )
+            renderer.cleanup()
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()

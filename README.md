@@ -18,9 +18,9 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 - **Source & Text View**: Inspect or edit the underlying document source with syntax highlighting, line numbers, and the translucent DocuPad yoga-pad watermark.
 - **Read-Only Lock (`Ctrl + R`)**: Toggle read-only mode anytime to prevent accidental edits while reading documentation.
 
-### Document Outline & Table of Contents Sidebar
-- **Automatic Heading Extraction (`F9`)**: Automatically builds a hierarchical Table of Contents from Markdown headings (`#` through `######`), reStructuredText underlined sections, HTML `<h1>`–`<h6>` tags, JSON top-level keys, or PDF pages.
-- **One-Click Section Jump**: Click any heading or page entry in the Outline sidebar to jump directly to that section or PDF page.
+### Document Outline & Bookmarks Sidebar
+- **Native PDF Bookmarks & Auto-Populated Chapters (`F9`)**: Loads embedded PDF bookmark trees (`PopplerIndexIter`) into a collapsible hierarchy with page badges and live active-page tracking. When a PDF has blank bookmarks, DocuPad automatically populates chapters and sections from printed Table of Contents pages (including multi-column TOCs and printed-to-PDF page offset calibration), in-body `Chapter`/`Part`/`Module`/`Unit` headings, or typographic heading sizes. Also extracts structured headings from Markdown (`#`–`######`), reStructuredText, HTML (`<h1>`–`<h6>`), and JSON.
+- **One-Click Section Jump**: Click any chapter, bookmark, heading, or page entry in the Outline sidebar to jump directly to that section or PDF page.
 
 ### Companion Integration with PythonPad
 - **Open in PythonPad**: Launch the current file directly in PythonPad from *Menu -> Open in PythonPad...*

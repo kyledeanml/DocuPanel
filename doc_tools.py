@@ -175,6 +175,24 @@ class PopplerBridge:
             cls._lib.poppler_dest_free.restype = None
             cls._lib.poppler_dest_free.argtypes = [ctypes.POINTER(PopplerDest)]
 
+            cls._lib.poppler_index_iter_new.restype = ctypes.c_void_p
+            cls._lib.poppler_index_iter_new.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_index_iter_get_action.restype = ctypes.c_void_p
+            cls._lib.poppler_index_iter_get_action.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_index_iter_get_child.restype = ctypes.c_void_p
+            cls._lib.poppler_index_iter_get_child.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_index_iter_next.restype = ctypes.c_int
+            cls._lib.poppler_index_iter_next.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_index_iter_free.restype = None
+            cls._lib.poppler_index_iter_free.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_action_free.restype = None
+            cls._lib.poppler_action_free.argtypes = [ctypes.c_void_p]
+
             cls._libgobject.g_object_unref.argtypes = [ctypes.c_void_p]
             cls._libglib.g_free.argtypes = [ctypes.c_void_p]
 
@@ -351,6 +369,58 @@ class PopplerBridge:
                 return links
             finally:
                 cls._libgobject.g_object_unref(page)
+
+    @classmethod
+    def get_pdf_bookmarks(cls, doc_handle, max_items: int = 4000, max_depth: int = 8) -> List["HeadingItem"]:
+        """Walk embedded PDF bookmark tree via PopplerIndexIter and return HeadingItems."""
+        if not doc_handle or not cls.is_available():
+            return []
+        items: List[HeadingItem] = []
+
+        def _walk(it_ptr, level: int):
+            while it_ptr and len(items) < max_items:
+                act = cls._lib.poppler_index_iter_get_action(it_ptr)
+                if act:
+                    try:
+                        act_any = ctypes.cast(act, ctypes.POINTER(PopplerActionAny)).contents
+                        raw_title = act_any.title.decode("utf-8", errors="replace") if act_any.title else ""
+                        title = re.sub(r"[\x00-\x1f]+", " ", raw_title).strip()
+                        target_page = 0
+                        if act_any.type == 2:  # POPPLER_ACTION_GOTO_DEST
+                            act_goto = ctypes.cast(act, ctypes.POINTER(PopplerActionGotoDest)).contents
+                            if act_goto.dest:
+                                d = act_goto.dest.contents
+                                target_page = d.page_num
+                                if d.named_dest:
+                                    resolved = cls._lib.poppler_document_find_dest(doc_handle, d.named_dest)
+                                    if resolved:
+                                        target_page = resolved.contents.page_num
+                                        cls._lib.poppler_dest_free(resolved)
+                        if title:
+                            items.append(HeadingItem(title=title, line=1, level=level, page=max(0, target_page)))
+                    finally:
+                        cls._lib.poppler_action_free(act)
+
+                if level < max_depth and len(items) < max_items:
+                    child_it = cls._lib.poppler_index_iter_get_child(it_ptr)
+                    if child_it:
+                        try:
+                            _walk(child_it, level + 1)
+                        finally:
+                            cls._lib.poppler_index_iter_free(child_it)
+
+                if not cls._lib.poppler_index_iter_next(it_ptr):
+                    break
+
+        with cls._lock:
+            root_it = cls._lib.poppler_index_iter_new(doc_handle)
+            if not root_it:
+                return []
+            try:
+                _walk(root_it, 1)
+            finally:
+                cls._lib.poppler_index_iter_free(root_it)
+        return items
 
     @classmethod
     def close_document(cls, doc_handle):
@@ -590,9 +660,19 @@ class DocumentParser:
             return f"[Error reading DOCX document: {e}]"
 
     @classmethod
-    def extract_outline(cls, text: str, doc_type: str = "markdown", pdf_page_count: int = 0) -> List[HeadingItem]:
+    def extract_outline(
+        cls,
+        text: str,
+        doc_type: str = "markdown",
+        pdf_page_count: int = 0,
+        pdf_renderer: Optional["PDFPageRenderer"] = None,
+    ) -> List[HeadingItem]:
         """Extract Table of Contents / Outline headings from document content."""
         items: List[HeadingItem] = []
+
+        if doc_type == "pdf" and pdf_renderer is not None and pdf_renderer.page_count > 0:
+            items, _ = pdf_renderer.get_outline_with_source(fallback_text=text)
+            return items
 
         if doc_type == "pdf" and pdf_page_count > 0:
             pages = text.split("\x0c")
@@ -933,6 +1013,8 @@ class PDFPageRenderer:
         self._pixbuf_cache = {}  # (page_num, scale_key): GdkPixbuf.Pixbuf
         self._text_layout_cache = {}  # page_num: (text, [(x1,y1,x2,y2), ...])
         self._links_cache = {}  # page_num: [{"rect": (x1,y1,x2,y2), "type": ..., "target": ...}, ...]
+        self._bookmarks_cache = None
+        self._outline_cache = None
         self._render_lock = threading.Lock()
         if pdf_path:
             self.load_pdf(pdf_path)
@@ -1169,12 +1251,365 @@ class PDFPageRenderer:
                 pass
         return None
 
+    _RE_TOC_CONTAINER = re.compile(
+        r"^(Chapter|CHAPTER|Part|PART|Unit|UNIT|Module|MODULE|Section|SECTION|Appendix|APPENDIX|Book|BOOK)\s+([0-9IVXivxA-Z]+)\b[:.\-\s]*(.*)$"
+    )
+    _RE_TOC_DOTS = re.compile(r"^(.+?)\s*(?:\.{2,}|·{2,}|…+|\s{2,})\s*(\d{1,4})\s*$")
+    _RE_TOC_TIGHT = re.compile(r"^(.+?[A-Za-z\)])\.(\d{1,4})\s*$")
+    _RE_TOC_SUBSECTION = re.compile(r"^(\d+\.\d+|[A-Z]\.\d+)\s+")
+
+    def get_bookmarks(self) -> List[HeadingItem]:
+        """Return embedded PDF bookmarks from PopplerIndexIter, cached per document."""
+        if not self.pdf_path or self.page_count == 0:
+            return []
+        with self._render_lock:
+            if self._bookmarks_cache is not None:
+                return self._bookmarks_cache
+        if self._doc_handle and PopplerBridge.is_available():
+            bms = PopplerBridge.get_pdf_bookmarks(self._doc_handle)
+            with self._render_lock:
+                self._bookmarks_cache = bms
+            return bms
+        return []
+
+    @staticmethod
+    def _split_columns_on_page(txt: str, rects: List[Tuple[float, float, float, float]], page_w: float) -> List[str]:
+        """Split concatenated two-column PDF lines using horizontal character rect gaps."""
+        segments = []
+        cur: List[str] = []
+        cur_x = 0.0
+        cur_y = 0.0
+        prev_x2 = None
+        for ch, rc in zip(txt, rects):
+            if ch == "\n":
+                if cur:
+                    segments.append((cur_x, cur_y, "".join(cur).strip()))
+                cur = []
+                prev_x2 = None
+            else:
+                if prev_x2 is not None and (rc[0] - prev_x2) > 16.0:
+                    if cur:
+                        segments.append((cur_x, cur_y, "".join(cur).strip()))
+                    cur = []
+                    cur_x = rc[0]
+                    cur_y = rc[1]
+                elif not cur:
+                    cur_x = rc[0]
+                    cur_y = rc[1]
+                cur.append(ch)
+                prev_x2 = rc[2]
+        if cur:
+            segments.append((cur_x, cur_y, "".join(cur).strip()))
+
+        cleaned = [
+            (x, y, re.sub(r"[\x00-\x1f]+", " ", s).strip())
+            for x, y, s in segments
+            if s.strip()
+        ]
+        mid = page_w * 0.45
+        left = [(y, s) for x, y, s in cleaned if x < mid]
+        right = [(y, s) for x, y, s in cleaned if x >= mid]
+        left_alpha = sum(1 for _, s in left if re.search(r"[A-Za-z]{2,}", s))
+        right_alpha = sum(1 for _, s in right if re.search(r"[A-Za-z]{2,}", s))
+        if (len(left) >= 4 and len(right) >= 4) or (left_alpha >= 3 and right_alpha >= 3):
+            left.sort(key=lambda t: t[0])
+            right.sort(key=lambda t: t[0])
+            return [s for _, s in left] + [s for _, s in right]
+        return [s for _, _, s in cleaned]
+
+    def _extract_toc_chapters(self) -> List[HeadingItem]:
+        """Auto-populate chapters & sections from printed Table of Contents pages."""
+        if not self._doc_handle or not PopplerBridge.is_available():
+            return []
+        max_scan = min(18, self.page_count)
+        raw_items: List[HeadingItem] = []
+        seen = set()
+        toc_pages: List[int] = []
+        started = False
+
+        for p in range(1, max_scan + 1):
+            txt, rects = self.get_page_text_layout(p)
+            if not txt:
+                continue
+            pw, _ = self.get_page_size(p)
+            lines = self._split_columns_on_page(txt, rects, pw)
+            has_toc_kw = any(re.search(r"\b(table of contents|contents)\b", l, re.I) for l in lines[:6])
+            matches = [l for l in lines if self._RE_TOC_DOTS.match(l) or self._RE_TOC_TIGHT.match(l)]
+
+            if (has_toc_kw and len(matches) >= 2) or (started and len(matches) >= 4):
+                page_items = []
+                dup_count = 0
+                idx = 0
+                while idx < len(lines):
+                    l = lines[idx]
+                    idx += 1
+                    if re.match(r"^(table of contents|contents|\d{1,4})$", l, re.I) or (
+                        "table of contents" in l.lower() and not self._RE_TOC_DOTS.match(l)
+                    ):
+                        continue
+                    m = self._RE_TOC_DOTS.match(l) or self._RE_TOC_TIGHT.match(l)
+                    if m:
+                        title = m.group(1).strip(" .·…")
+                        pg = int(m.group(2))
+                        if 1 <= pg <= self.page_count + 40 and len(title) >= 2:
+                            is_chap = bool(
+                                self._RE_TOC_CONTAINER.match(title)
+                                or re.match(r"^(Answers|Index|Glossary|Appendix|Preface|Solutions|Bibliography)", title, re.I)
+                            )
+                            is_sub = bool(self._RE_TOC_SUBSECTION.match(title))
+                            lvl = 1 if (is_chap or not is_sub) else 2
+                            key = (title.lower(), pg)
+                            if key in seen:
+                                dup_count += 1
+                            else:
+                                page_items.append((key, HeadingItem(title=title, line=1, level=lvl, page=pg)))
+                    elif self._RE_TOC_CONTAINER.match(l):
+                        if idx < len(lines):
+                            nxt = lines[idx]
+                            m_nxt = self._RE_TOC_DOTS.match(nxt) or self._RE_TOC_TIGHT.match(nxt)
+                            if m_nxt and not self._RE_TOC_CONTAINER.match(nxt) and not self._RE_TOC_SUBSECTION.match(nxt):
+                                combined = f"{l} {m_nxt.group(1).strip(' .·…')}"
+                                pg = int(m_nxt.group(2))
+                                idx += 1
+                                key = (combined.lower(), pg)
+                                if key in seen:
+                                    dup_count += 1
+                                else:
+                                    page_items.append((key, HeadingItem(title=combined, line=1, level=1, page=pg)))
+                                continue
+                        key = (l.lower(), 0)
+                        if key in seen:
+                            dup_count += 1
+                        else:
+                            page_items.append((key, HeadingItem(title=l, line=1, level=1, page=0)))
+
+                if started and dup_count > len(page_items):
+                    break
+                started = True
+                toc_pages.append(p)
+                for key, it in page_items:
+                    seen.add(key)
+                    raw_items.append(it)
+            elif started:
+                break
+
+        if len(raw_items) < 2:
+            return []
+
+        # Calibrate printed page number vs physical PDF page offset
+        votes = {}
+        toc_end_page = toc_pages[-1]
+        for item in raw_items:
+            if item.page > 0 and sum(votes.values()) < 5:
+                words = [
+                    w for w in re.findall(r"[A-Za-z]{4,}", item.title)
+                    if w.lower() not in ("chapter", "section", "module", "part", "unit", "introduction", "application")
+                ]
+                kw = words[0].lower() if words else ""
+                if kw:
+                    for off in [0] + list(range(1, 35)) + list(range(-1, -6, -1)):
+                        cand_p = item.page + off
+                        if toc_end_page < cand_p <= self.page_count:
+                            ptxt, _ = self.get_page_text_layout(cand_p)
+                            top_txt = "\n".join(ptxt.splitlines()[:10]).lower()
+                            if kw in top_txt:
+                                votes[off] = votes.get(off, 0) + 1
+                                break
+        offset = max(votes, key=votes.get) if votes else 0
+
+        for item in raw_items:
+            if item.page > 0:
+                item.page = max(1, min(self.page_count, item.page + offset))
+
+        for i, item in enumerate(raw_items):
+            if item.page == 0:
+                for j in range(i + 1, len(raw_items)):
+                    if raw_items[j].page > 0:
+                        cand = raw_items[j].page
+                        if cand > 1:
+                            prev_txt, _ = self.get_page_text_layout(cand - 1)
+                            prefix_kw = item.title.split(":")[0].strip().lower()
+                            if prefix_kw and prefix_kw in prev_txt.lower():
+                                cand = cand - 1
+                        item.page = cand
+                        break
+                if item.page == 0:
+                    item.page = 1
+
+        return raw_items
+
+    def _extract_body_chapters(self, fallback_text: str = "") -> List[HeadingItem]:
+        """Detect explicit Chapter / Module / Unit / Part headings in body pages."""
+        pages = fallback_text.split("\x0c") if fallback_text else []
+        if not pages and self.page_count <= 120:
+            pages = [self.get_page_text_layout(p)[0] for p in range(1, self.page_count + 1)]
+        if not pages:
+            return []
+
+        re_chap = re.compile(
+            r"^(?:CHAPTER|Chapter)\s+(?:\d+|[IVXLCDM]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)\b(?:[:.\-\s]+.*)?$"
+        )
+        re_unit = re.compile(
+            r"^(?:PART|Part|MODULE|Module|UNIT|Unit|BOOK|Book|LESSON|Lesson)\s+[A-Z0-9]+\b(?:[:.\-\s]+.*)?$"
+        )
+        re_app = re.compile(r"^(?:APPENDIX|Appendix)(?:\s+[A-Z0-9]+)?\b(?:[:.\-\s]+.*)?$")
+
+        items: List[HeadingItem] = []
+        seen_titles = set()
+        for idx, page_txt in enumerate(pages[:self.page_count], start=1):
+            lines = [re.sub(r"[\x00-\x1f]+", " ", l).strip() for l in page_txt.splitlines() if l.strip()]
+            for li, line in enumerate(lines[:10]):
+                if len(line) > 100:
+                    continue
+                if re_chap.match(line) or re_unit.match(line) or re_app.match(line):
+                    title = line
+                    # Join wrapped title if the line ends with ':' or is just 'Chapter N'
+                    if (title.endswith(":") or len(title.split()) <= 2) and li + 1 < len(lines):
+                        nxt = lines[li + 1]
+                        if 3 <= len(nxt) <= 80 and not nxt.isdigit():
+                            title = f"{title} {nxt}".replace(": ", ": ").strip()
+                    norm_key = re.sub(r"\s+", " ", title.lower())
+                    if norm_key not in seen_titles:
+                        seen_titles.add(norm_key)
+                        items.append(HeadingItem(title=title, line=1, level=1, page=idx))
+                    break
+        return items if len(items) >= 2 else []
+
+    def _extract_font_headings(self) -> List[HeadingItem]:
+        """Detect large-font structural headings when PDF lacks bookmarks, TOC, and 'Chapter' labels."""
+        if not self._doc_handle or not PopplerBridge.is_available() or self.page_count > 120:
+            return []
+
+        all_heights: List[float] = []
+        page_lines: List[Tuple[int, str, float]] = []
+
+        for p in range(1, self.page_count + 1):
+            txt, rects = self.get_page_text_layout(p)
+            if not txt or not rects:
+                continue
+            cur_c: List[str] = []
+            cur_h: List[float] = []
+            for ch, rc in zip(txt, rects):
+                if ch == "\n":
+                    if cur_c and cur_h:
+                        t = re.sub(r"[\x00-\x1f]+", " ", "".join(cur_c)).strip()
+                        avg_h = sum(cur_h) / len(cur_h)
+                        if t:
+                            page_lines.append((p, t, avg_h))
+                            all_heights.extend(cur_h)
+                    cur_c, cur_h = [], []
+                elif rc[3] > rc[1]:
+                    cur_c.append(ch)
+                    cur_h.append(rc[3] - rc[1])
+            if cur_c and cur_h:
+                t = re.sub(r"[\x00-\x1f]+", " ", "".join(cur_c)).strip()
+                avg_h = sum(cur_h) / len(cur_h)
+                if t:
+                    page_lines.append((p, t, avg_h))
+                    all_heights.extend(cur_h)
+
+        if not all_heights:
+            return []
+        sorted_h = sorted(all_heights)
+        med_h = sorted_h[len(sorted_h) // 2]
+        if med_h <= 1.0:
+            return []
+
+        # Count occurrences across pages to suppress repeating running headers
+        freq = {}
+        for _, t, h in page_lines:
+            if h >= med_h * 1.18:
+                freq[t.lower()] = freq.get(t.lower(), 0) + 1
+
+        max_repeat = max(2, int(self.page_count * 0.35))
+        items: List[HeadingItem] = []
+        seen = set()
+        for p, t, h in page_lines:
+            if h < med_h * 1.18 or len(t) < 3 or len(t) > 95:
+                continue
+            if t.isdigit() or not any(c.isalpha() for c in t):
+                continue
+            if self.page_count > 3 and freq.get(t.lower(), 0) >= max_repeat:
+                continue
+            key = (t.lower(), p)
+            if key in seen:
+                continue
+            seen.add(key)
+            lvl = 1 if (h >= med_h * 1.32 or re.match(r"^(\d+\.\s|[◆■●▸Chapter|Module|Part])", t)) else 2
+            items.append(HeadingItem(title=t, line=1, level=lvl, page=p))
+
+        return items if (len(items) >= 2 or (len(items) == 1 and self.page_count <= 3)) else []
+
+    def get_outline_with_source(self, fallback_text: str = "") -> Tuple[List[HeadingItem], str]:
+        """
+        Return (HeadingItems, source_type) where source_type is one of:
+        'bookmarks' | 'auto-chapters' | 'pages'
+        """
+        if not self.pdf_path or self.page_count == 0:
+            return [], "pages"
+
+        with self._render_lock:
+            if self._outline_cache is not None:
+                return self._outline_cache
+
+        # Tier 1: Native embedded PDF bookmarks
+        bms = self.get_bookmarks()
+        if len(bms) >= 2 or (len(bms) == 1 and self.page_count <= 5):
+            res = (bms, "bookmarks")
+            with self._render_lock:
+                self._outline_cache = res
+            return res
+
+        # Tier 2A: Blank bookmarks -> Autopopulate from Table of Contents
+        toc_items = self._extract_toc_chapters()
+        if len(toc_items) >= 2:
+            res = (toc_items, "auto-chapters")
+            with self._render_lock:
+                self._outline_cache = res
+            return res
+
+        # Tier 2B: Blank bookmarks -> Autopopulate from Chapter/Module/Unit body headers
+        body_items = self._extract_body_chapters(fallback_text=fallback_text)
+        if len(body_items) >= 2:
+            res = (body_items, "auto-chapters")
+            with self._render_lock:
+                self._outline_cache = res
+            return res
+
+        # Tier 2C: Blank bookmarks -> Autopopulate from large-font typography headings
+        font_items = self._extract_font_headings()
+        if font_items:
+            res = (font_items, "auto-chapters")
+            with self._render_lock:
+                self._outline_cache = res
+            return res
+
+        # Tier 3: Page-by-page markers fallback
+        pages = fallback_text.split("\x0c") if fallback_text else []
+        fallback_items: List[HeadingItem] = []
+        for idx in range(self.page_count):
+            snippet = ""
+            if idx < len(pages):
+                for line in pages[idx].splitlines():
+                    s = line.strip()
+                    if len(s) >= 3:
+                        snippet = f" — {s[:42]}"
+                        break
+            fallback_items.append(HeadingItem(title=f"Page {idx + 1}{snippet}", line=1, level=1, page=idx + 1))
+
+        res = (fallback_items, "pages")
+        with self._render_lock:
+            self._outline_cache = res
+        return res
+
     def cleanup_doc(self):
         with self._render_lock:
             self._pixbuf_cache.clear()
             self._page_sizes.clear()
             self._text_layout_cache.clear()
             self._links_cache.clear()
+            self._bookmarks_cache = None
+            self._outline_cache = None
             if self._doc_handle and PopplerBridge.is_available():
                 PopplerBridge.close_document(self._doc_handle)
                 self._doc_handle = None

@@ -55,6 +55,7 @@ class DocViewer(Gtk.Box):
         'file-saved': (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         'outline-updated': (GObject.SignalFlags.RUN_FIRST, None, ()),
         'open-file-requested': (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        'pdf-page-changed': (GObject.SignalFlags.RUN_FIRST, None, (int,)),
     }
 
     ZOOM_STEPS = [
@@ -113,6 +114,7 @@ class DocViewer(Gtk.Box):
         self._sel_anchor_idx = None
         self._hovered_link = None
         self._source_hovered_url = None
+        self.outline_source = "headings"
 
         # Stack switching between 'source', 'rendered', and 'pdf'
         self.view_stack = Gtk.Stack()
@@ -1411,6 +1413,22 @@ class DocViewer(Gtk.Box):
         elif hasattr(self, "fallback_preview"):
             self.fallback_preview.get_buffer().set_text(text)
 
+    def get_outline_items(self) -> Tuple[List, str]:
+        """Return (HeadingItems, source_type) where PDF uses native bookmarks or autopopulated chapters."""
+        text = self.get_text()
+        if self.doc_type == "pdf" and self.pdf_renderer and self.pdf_renderer.page_count > 0:
+            items, source = self.pdf_renderer.get_outline_with_source(fallback_text=text)
+            self.outline_source = source
+            return items, source
+        items = DocumentParser.extract_outline(
+            text,
+            doc_type=self.doc_type,
+            pdf_page_count=self.total_pdf_pages,
+            pdf_renderer=self.pdf_renderer,
+        )
+        self.outline_source = "headings"
+        return items, "headings"
+
     def goto_pdf_page(self, page_num: int):
         if not self.pdf_renderer or self.pdf_renderer.page_count == 0:
             return
@@ -1427,6 +1445,7 @@ class DocViewer(Gtk.Box):
                 curr_base_h = ph * 1.333
                 if abs(curr_base_w - getattr(self, "_current_page_base_w", 0)) > 25 or abs(curr_base_h - getattr(self, "_current_page_base_h", 0)) > 25:
                     self.fit_to_page()
+                    self.emit("pdf-page-changed", self.current_pdf_page)
                     return
             except Exception:
                 pass
@@ -1441,6 +1460,7 @@ class DocViewer(Gtk.Box):
             if hadj:
                 hadj.set_value(hadj.get_lower())
         self._update_pan_cursor(gripping=False)
+        self.emit("pdf-page-changed", self.current_pdf_page)
 
     def _refresh_pdf_page(self, sync: bool = False):
         if not self.pdf_renderer:

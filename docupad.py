@@ -403,27 +403,34 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         self.hpaned.set_position(250)
         outer_vbox.pack_start(self.hpaned, True, True, 0)
 
-        # Left Pane: Document Outline / Table of Contents
+        # Left Pane: Document Outline / Bookmarks
         self.toc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.toc_box.set_no_show_all(True)
         self.toc_box.set_visible(False)
-        toc_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toc_header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         toc_header.set_margin_start(10)
         toc_header.set_margin_end(8)
         toc_header.set_margin_top(6)
         toc_header.set_margin_bottom(6)
 
         lbl_toc = Gtk.Label()
-        lbl_toc.set_markup("<b>DOCUMENT OUTLINE</b>")
+        lbl_toc.set_markup("<b>DOCUMENT OUTLINE / BOOKMARKS</b>")
         lbl_toc.set_xalign(0)
-        toc_header.pack_start(lbl_toc, True, True, 0)
+        toc_header.pack_start(lbl_toc, False, False, 0)
+
+        self.lbl_toc_source = Gtk.Label(label="")
+        self.lbl_toc_source.set_xalign(0)
+        Gtk.StyleContext.add_class(self.lbl_toc_source.get_style_context(), "dim-label")
+        toc_header.pack_start(self.lbl_toc_source, False, False, 0)
+
+        toc_header.show_all()
         self.toc_box.pack_start(toc_header, False, False, 0)
 
         toc_scroll = Gtk.ScrolledWindow()
         toc_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
-        # Columns: (display_title, line_number, page_number)
-        self.toc_store = Gtk.ListStore(str, int, int)
+        # Columns: (display_title, line_number, page_number, page_badge)
+        self.toc_store = Gtk.TreeStore(str, int, int, str)
         self.toc_tree = Gtk.TreeView(model=self.toc_store)
         self.toc_tree.set_headers_visible(False)
         self.toc_tree.set_activate_on_single_click(True)
@@ -431,10 +438,21 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         renderer = Gtk.CellRendererText()
         renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
         col = Gtk.TreeViewColumn("Section", renderer, text=0)
+        col.set_expand(True)
         self.toc_tree.append_column(col)
+
+        renderer_pg = Gtk.CellRendererText()
+        renderer_pg.set_property("xalign", 1.0)
+        renderer_pg.set_property("foreground", "#00d4ff")
+        renderer_pg.set_property("scale", 0.85)
+        col_pg = Gtk.TreeViewColumn("Page", renderer_pg, text=3)
+        col_pg.set_expand(False)
+        self.toc_tree.append_column(col_pg)
+
         self.toc_tree.connect("row-activated", self._on_toc_row_activated)
 
         toc_scroll.add(self.toc_tree)
+        toc_scroll.show_all()
         self.toc_box.pack_start(toc_scroll, True, True, 0)
         self.hpaned.pack1(self.toc_box, resize=False, shrink=False)
 
@@ -489,6 +507,7 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         viewer.connect("file-saved", lambda v, p: self._update_tab_title(v))
         viewer.connect("outline-updated", lambda v: self.refresh_outline())
         viewer.connect("open-file-requested", lambda v, path: self.new_tab(path))
+        viewer.connect("pdf-page-changed", self._on_pdf_page_changed)
 
         tab_box = self._create_tab_label(viewer)
         idx = self.notebook_tabs.append_page(viewer, tab_box)
@@ -601,18 +620,76 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         viewer = self.get_current_viewer()
         self.toc_store.clear()
         if not viewer:
+            if hasattr(self, "lbl_toc_source"):
+                self.lbl_toc_source.set_text("")
             return
 
-        text = viewer.get_text()
-        headings = DocumentParser.extract_outline(
-            text,
-            doc_type=viewer.doc_type,
-            pdf_page_count=viewer.total_pdf_pages
-        )
+        headings, source = viewer.get_outline_items()
+
+        if hasattr(self, "lbl_toc_source"):
+            source_labels = {
+                "bookmarks": f"PDF Bookmarks ({len(headings)})",
+                "auto-chapters": f"Auto-Populated Chapters ({len(headings)})",
+                "pages": f"Page Index ({len(headings)})",
+                "headings": f"Section Headings ({len(headings)})",
+            }
+            self.lbl_toc_source.set_text(source_labels.get(source, ""))
+
+        # Insert hierarchically into TreeStore based on heading level
+        # Stack holds tuples of (level, Gtk.TreeIter)
+        parent_stack = []
         for h in headings:
-            indent = "  " * max(0, h.level - 1)
-            prefix = "• " if h.level > 1 else "▸ "
-            self.toc_store.append([f"{indent}{prefix}{h.title}", h.line, h.page])
+            lvl = max(1, int(h.level))
+            while parent_stack and parent_stack[-1][0] >= lvl:
+                parent_stack.pop()
+            parent_iter = parent_stack[-1][1] if parent_stack else None
+            page_badge = f"p.{h.page}" if h.page > 0 else ""
+            row_iter = self.toc_store.append(parent_iter, [h.title, h.line, h.page, page_badge])
+            parent_stack.append((lvl, row_iter))
+
+        # Expand automatically when concise; keep top chapters tidy for large multi-chapter books
+        if len(headings) <= 45:
+            self.toc_tree.expand_all()
+        else:
+            # Expand level 1 only if not overcrowded
+            top_count = sum(1 for h in headings if h.level == 1)
+            if top_count <= 8 and len(headings) <= 100:
+                self.toc_tree.expand_all()
+
+        if viewer.doc_type == "pdf" and viewer.current_pdf_page > 0:
+            self._sync_toc_selection_to_page(viewer.current_pdf_page)
+
+    def _on_pdf_page_changed(self, viewer, page_num: int):
+        if viewer == self.get_current_viewer():
+            self._sync_toc_selection_to_page(page_num)
+
+    def _sync_toc_selection_to_page(self, page_num: int):
+        """Highlight the outline/bookmark entry matching or immediately preceding page_num."""
+        if page_num <= 0 or not hasattr(self, "toc_store"):
+            return
+
+        best_path = None
+        best_page = -1
+
+        def _walk(it):
+            nonlocal best_path, best_page
+            while it:
+                pg = self.toc_store.get_value(it, 2)
+                path = self.toc_store.get_path(it)
+                if 0 < pg <= page_num and pg >= best_page:
+                    best_page = pg
+                    best_path = path
+                if self.toc_store.iter_has_child(it) and self.toc_tree.row_expanded(path):
+                    _walk(self.toc_store.iter_children(it))
+                it = self.toc_store.iter_next(it)
+
+        root_it = self.toc_store.get_iter_first()
+        if root_it:
+            _walk(root_it)
+
+        if best_path is not None:
+            sel = self.toc_tree.get_selection()
+            sel.select_path(best_path)
 
     def _on_toc_row_activated(self, tree, path, column):
         viewer = self.get_current_viewer()
