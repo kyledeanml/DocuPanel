@@ -12,7 +12,9 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 
 ### Multi-Format Document Viewing & Rendering
 - **Rendered Reader View (`F6` / `Ctrl + P`)**: View Markdown (`.md`), reStructuredText (`.rst`), HTML (`.html`), CSV/TSV tables (`.csv`, `.tsv`), ODT (`.odt`), and DOCX (`.docx`) rendered with clean dark-neon typography, formatted tables, blockquotes, and code blocks.
-- **High-DPI PDF Page Viewer (`.pdf`)**: Inspect PDF documents with crisp page-by-page rasterization (`pdftoppm`), zoom scaling, and instant text extraction (`pdftotext`) in Source View.
+- **High-DPI PDF Page Viewer (`.pdf`)**: Inspect PDF documents with crisp page-by-page rasterization (`pdftoppm` / `PopplerBridge`), zoom scaling, and instant text extraction (`pdftotext`) in Source View.
+- **Interactive PDF Text Selection & Copying**: Click and drag across PDF pages to select text with translucent neon cyan highlight overlays; double-click selects words, triple-click selects full lines, `Ctrl + A` selects all text on the current page, and `Ctrl + C` (or right-click -> Copy) copies the selected text to the clipboard. Text selections automatically prime the system primary selection buffer.
+- **Universal Hyperlink Navigation (`Ctrl + Click`)**: In PDF View, Source View, and Rendered Reader View, holding `Ctrl` over links transforms the cursor to a pointer hand and shows the destination in a tooltip. `Ctrl + Click` opens web and email links in the default browser, jumps to destination pages for internal PDF links, or opens linked local documents in a new DocuPad tab.
 - **Source & Text View**: Inspect or edit the underlying document source with syntax highlighting, line numbers, and the translucent DocuPad yoga-pad watermark.
 - **Read-Only Lock (`Ctrl + R`)**: Toggle read-only mode anytime to prevent accidental edits while reading documentation.
 
@@ -67,5 +69,10 @@ The installer automatically:
 | `Scroll Wheel` | **Next / Previous PDF Page (in PDF View)** |
 | `Home` / `End` | **First / Last PDF Page (in PDF View)** |
 | `Ctrl + Scroll Wheel` | **Smooth Real-Time Zooming** |
-| `Click + Drag` | **Grip & Pan Page (when zoomed in on PDF)** |
+| `Click + Drag` | **Select Text (on text) or Grip & Pan Page (on margins/zoomed PDF)** |
+| `Middle Click + Drag` | **Grip & Pan Page Anywhere (when zoomed in on PDF)** |
+| `Double-Click / Triple-Click` | **Select Word / Select Entire Line (PDF View)** |
+| `Ctrl + Click` | **Follow Hyperlink (PDF, Source, and Reader Views)** |
+| `Ctrl + C` | **Copy Selected Text to Clipboard** |
+| `Ctrl + A` | **Select All Text on Page (PDF View)** |
 | `Ctrl + Q` | **Quit Application** |

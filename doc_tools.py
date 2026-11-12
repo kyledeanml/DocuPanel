@@ -38,6 +38,72 @@ class PycairoContext(ctypes.Structure):
     ]
 
 
+class PopplerRectangle(ctypes.Structure):
+    _fields_ = [
+        ("x1", ctypes.c_double),
+        ("y1", ctypes.c_double),
+        ("x2", ctypes.c_double),
+        ("y2", ctypes.c_double),
+    ]
+
+
+class PopplerLinkMapping(ctypes.Structure):
+    _fields_ = [
+        ("area", PopplerRectangle),
+        ("action", ctypes.c_void_p),
+    ]
+
+
+class GList(ctypes.Structure):
+    pass
+
+
+GList._fields_ = [
+    ("data", ctypes.c_void_p),
+    ("next", ctypes.POINTER(GList)),
+    ("prev", ctypes.POINTER(GList)),
+]
+
+
+class PopplerActionAny(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("title", ctypes.c_char_p),
+    ]
+
+
+class PopplerActionUri(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("title", ctypes.c_char_p),
+        ("uri", ctypes.c_char_p),
+    ]
+
+
+class PopplerDest(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("page_num", ctypes.c_int),
+        ("left", ctypes.c_double),
+        ("bottom", ctypes.c_double),
+        ("right", ctypes.c_double),
+        ("top", ctypes.c_double),
+        ("zoom", ctypes.c_double),
+        ("named_dest", ctypes.c_char_p),
+        ("change_left", ctypes.c_uint),
+        ("change_top", ctypes.c_uint),
+        ("change_zoom", ctypes.c_uint),
+    ]
+
+
+class PopplerActionGotoDest(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("title", ctypes.c_char_p),
+        ("dest", ctypes.POINTER(PopplerDest)),
+    ]
+
+
 class PopplerBridge:
     """Direct ctypes bridge to libpoppler-glib for 75x faster in-memory Cairo PDF rasterization."""
 
@@ -89,6 +155,25 @@ class PopplerBridge:
 
             cls._lib.poppler_page_get_text.restype = ctypes.c_void_p
             cls._lib.poppler_page_get_text.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_page_get_text_layout.restype = ctypes.c_int
+            cls._lib.poppler_page_get_text_layout.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.POINTER(PopplerRectangle)),
+                ctypes.POINTER(ctypes.c_uint)
+            ]
+
+            cls._lib.poppler_page_get_link_mapping.restype = ctypes.POINTER(GList)
+            cls._lib.poppler_page_get_link_mapping.argtypes = [ctypes.c_void_p]
+
+            cls._lib.poppler_page_free_link_mapping.restype = None
+            cls._lib.poppler_page_free_link_mapping.argtypes = [ctypes.POINTER(GList)]
+
+            cls._lib.poppler_document_find_dest.restype = ctypes.POINTER(PopplerDest)
+            cls._lib.poppler_document_find_dest.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+            cls._lib.poppler_dest_free.restype = None
+            cls._lib.poppler_dest_free.argtypes = [ctypes.POINTER(PopplerDest)]
 
             cls._libgobject.g_object_unref.argtypes = [ctypes.c_void_p]
             cls._libglib.g_free.argtypes = [ctypes.c_void_p]
@@ -180,6 +265,92 @@ class PopplerBridge:
                     pages_out.append("")
                 cls._libgobject.g_object_unref(page)
         return "\x0c".join(pages_out)
+
+    @classmethod
+    def get_page_text_layout(cls, doc_handle, page_index: int) -> Tuple[str, List[Tuple[float, float, float, float]]]:
+        """Extract page text and exact per-character bounding rectangles (x1, y1, x2, y2)."""
+        if not doc_handle or not cls.is_available():
+            return "", []
+        with cls._lock:
+            page = cls._lib.poppler_document_get_page(doc_handle, page_index)
+            if not page:
+                return "", []
+            try:
+                txt_ptr = cls._lib.poppler_page_get_text(page)
+                text = ""
+                if txt_ptr:
+                    try:
+                        text = ctypes.string_at(txt_ptr).decode("utf-8", errors="replace")
+                    finally:
+                        cls._libglib.g_free(txt_ptr)
+
+                rects_ptr = ctypes.POINTER(PopplerRectangle)()
+                n_rects = ctypes.c_uint(0)
+                char_rects = []
+                ok = cls._lib.poppler_page_get_text_layout(page, ctypes.byref(rects_ptr), ctypes.byref(n_rects))
+                if ok and rects_ptr and n_rects.value > 0:
+                    try:
+                        for i in range(n_rects.value):
+                            r = rects_ptr[i]
+                            char_rects.append((r.x1, r.y1, r.x2, r.y2))
+                    finally:
+                        cls._libglib.g_free(rects_ptr)
+
+                return text, char_rects
+            finally:
+                cls._libgobject.g_object_unref(page)
+
+    @classmethod
+    def get_page_links(cls, doc_handle, page_index: int) -> List[dict]:
+        """Extract interactive hyperlinks (URIs and internal page jumps) on the page in top-origin coordinates."""
+        if not doc_handle or not cls.is_available():
+            return []
+        with cls._lock:
+            page = cls._lib.poppler_document_get_page(doc_handle, page_index)
+            if not page:
+                return []
+            try:
+                w_c = ctypes.c_double()
+                h_c = ctypes.c_double()
+                cls._lib.poppler_page_get_size(page, ctypes.byref(w_c), ctypes.byref(h_c))
+                page_h = h_c.value
+
+                glist = cls._lib.poppler_page_get_link_mapping(page)
+                if not glist:
+                    return []
+                links = []
+                cur = glist
+                while cur:
+                    m = ctypes.cast(cur.contents.data, ctypes.POINTER(PopplerLinkMapping)).contents
+                    x1 = min(m.area.x1, m.area.x2)
+                    x2 = max(m.area.x1, m.area.x2)
+                    y1 = min(page_h - m.area.y1, page_h - m.area.y2)
+                    y2 = max(page_h - m.area.y1, page_h - m.area.y2)
+                    area = (x1, y1, x2, y2)
+                    if m.action:
+                        act_any = ctypes.cast(m.action, ctypes.POINTER(PopplerActionAny)).contents
+                        title = act_any.title.decode("utf-8", "ignore") if act_any.title else ""
+                        if act_any.type == 5:  # POPPLER_ACTION_URI
+                            act_uri = ctypes.cast(m.action, ctypes.POINTER(PopplerActionUri)).contents
+                            uri = act_uri.uri.decode("utf-8", "ignore") if act_uri.uri else ""
+                            if uri:
+                                links.append({"rect": area, "type": "uri", "target": uri, "title": title})
+                        elif act_any.type == 2:  # POPPLER_ACTION_GOTO_DEST
+                            act_goto = ctypes.cast(m.action, ctypes.POINTER(PopplerActionGotoDest)).contents
+                            if act_goto.dest:
+                                d = act_goto.dest.contents
+                                target_page = d.page_num
+                                if d.named_dest:
+                                    resolved = cls._lib.poppler_document_find_dest(doc_handle, d.named_dest)
+                                    if resolved:
+                                        target_page = resolved.contents.page_num
+                                        cls._lib.poppler_dest_free(resolved)
+                                links.append({"rect": area, "type": "page", "target": target_page, "title": title})
+                    cur = cur.contents.next
+                cls._lib.poppler_page_free_link_mapping(glist)
+                return links
+            finally:
+                cls._libgobject.g_object_unref(page)
 
     @classmethod
     def close_document(cls, doc_handle):
@@ -760,6 +931,8 @@ class PDFPageRenderer:
         self._doc_handle = None
         self._page_sizes = {}
         self._pixbuf_cache = {}  # (page_num, scale_key): GdkPixbuf.Pixbuf
+        self._text_layout_cache = {}  # page_num: (text, [(x1,y1,x2,y2), ...])
+        self._links_cache = {}  # page_num: [{"rect": (x1,y1,x2,y2), "type": ..., "target": ...}, ...]
         self._render_lock = threading.Lock()
         if pdf_path:
             self.load_pdf(pdf_path)
@@ -783,6 +956,38 @@ class PDFPageRenderer:
             self._page_sizes[page_num] = sz
             return sz
         return (595.0, 842.0)
+
+    def get_page_text_layout(self, page_num: int) -> Tuple[str, List[Tuple[float, float, float, float]]]:
+        """Return (text, char_rects) for page_num (1-based). Rectangles are (x1, y1, x2, y2) in PDF points."""
+        if not self.pdf_path or self.page_count == 0:
+            return "", []
+        page_num = max(1, min(page_num, self.page_count))
+        with self._render_lock:
+            if page_num in self._text_layout_cache:
+                return self._text_layout_cache[page_num]
+
+        if self._doc_handle and PopplerBridge.is_available():
+            res = PopplerBridge.get_page_text_layout(self._doc_handle, page_num - 1)
+            with self._render_lock:
+                self._text_layout_cache[page_num] = res
+            return res
+        return "", []
+
+    def get_page_links(self, page_num: int) -> List[dict]:
+        """Return list of interactive hyperlinks (URIs and internal page jumps) on page_num (1-based)."""
+        if not self.pdf_path or self.page_count == 0:
+            return []
+        page_num = max(1, min(page_num, self.page_count))
+        with self._render_lock:
+            if page_num in self._links_cache:
+                return self._links_cache[page_num]
+
+        if self._doc_handle and PopplerBridge.is_available():
+            links = PopplerBridge.get_page_links(self._doc_handle, page_num - 1)
+            with self._render_lock:
+                self._links_cache[page_num] = links
+            return links
+        return []
 
     def render_page_surface(self, page_num: int, scale: float = 1.0) -> Optional[cairo.ImageSurface]:
         """Render page_num (1-based) directly to an in-memory cairo.ImageSurface (purely CPU-bound, thread safe)."""
@@ -968,6 +1173,8 @@ class PDFPageRenderer:
         with self._render_lock:
             self._pixbuf_cache.clear()
             self._page_sizes.clear()
+            self._text_layout_cache.clear()
+            self._links_cache.clear()
             if self._doc_handle and PopplerBridge.is_available():
                 PopplerBridge.close_document(self._doc_handle)
                 self._doc_handle = None

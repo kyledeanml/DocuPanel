@@ -6,10 +6,12 @@ with the translucent DocuPad watermark (darker-blue open book & document on an u
 """
 
 import os
+import re
+import urllib.parse
 import tempfile
 import cairo
 import gi
-from typing import Optional
+from typing import Optional, Tuple, List
 
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
@@ -17,7 +19,7 @@ gi.require_version('GdkPixbuf', '2.0')
 gi.require_version('GtkSource', '4')
 gi.require_version('Pango', '1.0')
 
-from gi.repository import Gtk, Gdk, GdkPixbuf, GtkSource, Pango, GObject, GLib
+from gi.repository import Gtk, Gdk, GdkPixbuf, GtkSource, Pango, GObject, GLib, Gio
 from doc_tools import DocumentParser, PDFPageRenderer
 
 try:
@@ -52,6 +54,7 @@ class DocViewer(Gtk.Box):
         'zoom-changed': (GObject.SignalFlags.RUN_FIRST, None, (int,)),
         'file-saved': (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         'outline-updated': (GObject.SignalFlags.RUN_FIRST, None, ()),
+        'open-file-requested': (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     ZOOM_STEPS = [
@@ -63,6 +66,8 @@ class DocViewer(Gtk.Box):
     _shared_css_provider = None
     _watermark_pixbuf = None
     _watermark_loaded = False
+    _URL_REGEX = re.compile(r'https?://[^\s)\]>"\'`]+|mailto:[^\s)\]>"\'`]+|file://[^\s)\]>"\'`]+')
+    _MD_LINK_REGEX = re.compile(r'\[([^\]]+)\]\((https?://[^\s)\]>"\'`]+|[^)\s]+)\)')
 
     def __init__(self, file_path=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -97,6 +102,17 @@ class DocViewer(Gtk.Box):
         self._current_page_base_h = 842.0
         self._pdf_render_gen = 0
         self._pdf_debounce_timer = None
+
+        # PDF text selection & interactive hyperlinks
+        self._page_text = ""
+        self._page_char_rects = []
+        self._page_links = []
+        self._selected_range = None
+        self._selected_text = ""
+        self._is_selecting_text = False
+        self._sel_anchor_idx = None
+        self._hovered_link = None
+        self._source_hovered_url = None
 
         # Stack switching between 'source', 'rendered', and 'pdf'
         self.view_stack = Gtk.Stack()
@@ -201,6 +217,7 @@ class DocViewer(Gtk.Box):
         self.pdf_event_box = Gtk.EventBox()
         self.pdf_event_box.add(self.pdf_image)
         self.pdf_event_box.set_visible_window(True)
+        self.pdf_event_box.connect_after("draw", self._on_draw_pdf_overlay)
 
         pan_mask = (
             Gdk.EventMask.BUTTON_PRESS_MASK
@@ -315,11 +332,28 @@ class DocViewer(Gtk.Box):
             key_targets.append(self.pdf_event_box)
         for kw in key_targets:
             kw.connect("key-press-event", self._on_key_press)
+            kw.connect("key-release-event", self._on_key_release)
+
+        # Source View mouse & keyboard interactions for Ctrl+Click hyperlink navigation
+        self.source_view.add_events(
+            Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.KEY_RELEASE_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
+        self.source_view.connect("motion-notify-event", self._on_source_motion_notify)
+        self.source_view.connect("button-press-event", self._on_source_button_press)
+        self.source_view.connect("key-press-event", self._on_source_key_press)
+        self.source_view.connect("key-release-event", self._on_source_key_release)
+        self.source_view.connect("leave-notify-event", self._on_source_leave_notify)
+        self.source_view.connect("populate-popup", self._on_source_populate_popup)
 
         if HAS_WEBKIT and self.web_view is not None:
             self.web_view.add_events(scroll_mask)
             self.web_view.connect("event", self._on_webkit_event)
             self.web_view.connect("scroll-event", self._on_scroll_event)
+            self.web_view.connect("decide-policy", self._on_web_view_decide_policy)
 
         self.source_view.connect_after("draw", self._on_draw_watermark)
 
@@ -488,12 +522,32 @@ class DocViewer(Gtk.Box):
         return False
 
     def _on_key_press(self, widget, event):
-        """Keyboard navigation for PDF pages (Page Up, Page Down, Arrow keys, Home, End)."""
+        """Keyboard navigation and shortcuts (Ctrl+C, Ctrl+A, Page Up/Down, Arrows, Home/End)."""
+        kv = getattr(event, "keyval", 0)
+        state = getattr(event, "state", 0)
+        is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+
+        if kv in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
+            if self.get_view_mode() == "pdf":
+                self._update_pdf_hover_cursor(is_ctrl=True)
+            elif self.get_view_mode() == "source":
+                if self._source_hovered_url:
+                    self._update_source_cursor(True, self._source_hovered_url)
+
         if self.get_view_mode() == "pdf":
-            state = getattr(event, "state", 0)
+            # Ctrl + C: Copy selected text
+            if is_ctrl and kv in (Gdk.KEY_c, Gdk.KEY_C):
+                if getattr(self, "_selected_text", None):
+                    self._copy_to_clipboard(self._selected_text)
+                    return True
+
+            # Ctrl + A: Select all text on current PDF page
+            if is_ctrl and kv in (Gdk.KEY_a, Gdk.KEY_A):
+                self._select_all_pdf()
+                return True
+
             mod_mask = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK
             if not (state & mod_mask):
-                kv = getattr(event, "keyval", 0)
                 is_shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
 
                 # Previous Page: Page_Up, KP_Page_Up, Prior, Left, Backspace, Shift+Space
@@ -516,6 +570,15 @@ class DocViewer(Gtk.Box):
                     if self.pdf_renderer and self.pdf_renderer.page_count > 0:
                         self.goto_pdf_page(self.pdf_renderer.page_count)
                     return True
+        return False
+
+    def _on_key_release(self, widget, event):
+        kv = getattr(event, "keyval", 0)
+        if kv in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
+            if self.get_view_mode() == "pdf":
+                self._update_pdf_hover_cursor(is_ctrl=False)
+            elif self.get_view_mode() == "source":
+                self._update_source_cursor(False, self._source_hovered_url)
         return False
 
     # --------------------------------------------------------------------------
@@ -600,6 +663,26 @@ class DocViewer(Gtk.Box):
             except Exception:
                 pass
 
+    def _set_pdf_cursor(self, cursor_name: str):
+        windows = self._get_pan_windows()
+        for gdk_win in windows:
+            try:
+                disp = gdk_win.get_display()
+                if disp:
+                    cur = Gdk.Cursor.new_from_name(disp, cursor_name)
+                    if not cur:
+                        if cursor_name == "pointer":
+                            cur = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.HAND2)
+                        elif cursor_name == "xterm":
+                            cur = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.XTERM)
+                        elif cursor_name == "grab":
+                            cur = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.HAND1)
+                        elif cursor_name == "grabbing":
+                            cur = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.FLEUR)
+                    gdk_win.set_cursor(cur)
+            except Exception:
+                pass
+
     def _get_event_button(self, event) -> int:
         """Safely extract integer mouse button index (1=Left, 2=Middle, 3=Right)."""
         if hasattr(event, "get_button"):
@@ -641,60 +724,478 @@ class DocViewer(Gtk.Box):
             return float(x), float(y)
         return 0.0, 0.0
 
+    # --------------------------------------------------------------------------
+    # PDF Coordinates, Text Layout, and Link Detection
+    # --------------------------------------------------------------------------
+    def _get_pdf_page_metrics(self) -> Optional[Tuple[float, float, int, int, float, float]]:
+        """Return (pix_x, pix_y, pw, ph, page_w, page_h) for currently rendered PDF page."""
+        if not self.pdf_renderer or self.pdf_renderer.page_count == 0:
+            return None
+        pix = self.pdf_image.get_pixbuf()
+        if not pix:
+            return None
+        pw = pix.get_width()
+        ph = pix.get_height()
+        page_w, page_h = self.pdf_renderer.get_page_size(self.current_pdf_page)
+        if page_w <= 0 or page_h <= 0 or pw <= 0 or ph <= 0:
+            return None
+
+        img_alloc = self.pdf_image.get_allocation()
+        pix_x = img_alloc.x + max(0, int((img_alloc.width - pw) * 0.5))
+        pix_y = img_alloc.y + max(0, int((img_alloc.height - ph) * 0.5))
+        return (float(pix_x), float(pix_y), int(pw), int(ph), float(page_w), float(page_h))
+
+    def _event_to_pdf_coords(self, widget, event) -> Optional[Tuple[float, float]]:
+        """Convert widget event coordinates to PDF page points (0,0 at top-left)."""
+        metrics = self._get_pdf_page_metrics()
+        if not metrics:
+            return None
+        pix_x, pix_y, pw, ph, page_w, page_h = metrics
+
+        ex = float(getattr(event, "x", 0.0))
+        ey = float(getattr(event, "y", 0.0))
+        if widget != self.pdf_event_box and hasattr(widget, "translate_coordinates"):
+            pt = widget.translate_coordinates(self.pdf_event_box, int(ex), int(ey))
+            if pt is not None:
+                ex, ey = float(pt[0]), float(pt[1])
+
+        off_x = ex - pix_x
+        off_y = ey - pix_y
+
+        if off_x < -20 or off_x > pw + 20 or off_y < -20 or off_y > ph + 20:
+            return None
+
+        clamped_x = max(0.0, min(float(pw), off_x))
+        clamped_y = max(0.0, min(float(ph), off_y))
+        pdf_x = clamped_x / (pw / page_w)
+        pdf_y = clamped_y / (ph / page_h)
+        return (pdf_x, pdf_y)
+
+    def _find_char_at(self, pdf_x: float, pdf_y: float) -> Optional[int]:
+        if not self._page_char_rects:
+            return None
+        # 1. Exact character box match
+        for i, (x1, y1, x2, y2) in enumerate(self._page_char_rects):
+            if x1 <= pdf_x <= x2 and y1 <= pdf_y <= y2:
+                return i
+        # 2. Line match with vertical tolerance (+- 4pt)
+        best_i = None
+        min_dx = 1e9
+        for i, (x1, y1, x2, y2) in enumerate(self._page_char_rects):
+            if (y1 - 4.0) <= pdf_y <= (y2 + 4.0):
+                if pdf_x < x1:
+                    dx = x1 - pdf_x
+                elif pdf_x > x2:
+                    dx = pdf_x - x2
+                else:
+                    dx = 0.0
+                if dx < min_dx:
+                    min_dx = dx
+                    best_i = i
+        if best_i is not None and min_dx < 30.0:
+            return best_i
+        return None
+
+    def _find_link_at(self, pdf_x: float, pdf_y: float) -> Optional[dict]:
+        if not self._page_links:
+            return None
+        for link in self._page_links:
+            lx1, ly1, lx2, ly2 = link["rect"]
+            if lx1 <= pdf_x <= lx2 and ly1 <= pdf_y <= ly2:
+                return link
+        return None
+
+    def _set_pdf_selection(self, start: int, end: int):
+        if not self._page_text:
+            self._clear_pdf_selection()
+            return
+        start = max(0, min(start, len(self._page_text)))
+        end = max(0, min(end, len(self._page_text)))
+        if start == end:
+            self._clear_pdf_selection()
+            return
+        if start > end:
+            start, end = end, start
+        self._selected_range = (start, end)
+        self._selected_text = self._page_text[start:end]
+
+    def _clear_pdf_selection(self):
+        self._selected_range = None
+        self._selected_text = ""
+        self._is_selecting_text = False
+        self._sel_anchor_idx = None
+
+    def _expand_to_word(self, idx: int) -> Tuple[int, int]:
+        if not self._page_text or idx < 0 or idx >= len(self._page_text):
+            return (0, 0)
+        delims = r' ' + "\t\r\n.,;:!?'\"()[]{}<>/\\|@#$%^&*+-="
+        if self._page_text[idx] in " \t\r\n":
+            return (idx, idx + 1)
+        left = idx
+        while left > 0 and self._page_text[left - 1] not in delims:
+            left -= 1
+        right = idx
+        while right < len(self._page_text) and self._page_text[right] not in delims:
+            right += 1
+        return (left, max(left + 1, right))
+
+    def _expand_to_line(self, idx: int) -> Tuple[int, int]:
+        if not self._page_text or idx < 0 or idx >= len(self._page_text):
+            return (0, 0)
+        left = self._page_text.rfind("\n", 0, idx)
+        left = 0 if left == -1 else left + 1
+        right = self._page_text.find("\n", idx)
+        right = len(self._page_text) if right == -1 else right
+        return (left, max(left + 1, right))
+
+    def _on_draw_pdf_overlay(self, widget, cr):
+        """Render glowing selection rectangles and hovered link underlines over the PDF page."""
+        metrics = self._get_pdf_page_metrics()
+        if not metrics:
+            return False
+        pix_x, pix_y, pw, ph, page_w, page_h = metrics
+        sx = pw / page_w
+        sy = ph / page_h
+
+        # 1. Text Selection highlight
+        if self._selected_range and self._page_char_rects:
+            start, end = self._selected_range
+            rects = self._page_char_rects[start:end]
+            line_boxes = []
+            for rx1, ry1, rx2, ry2 in rects:
+                merged = False
+                for lb in line_boxes:
+                    if not (ry2 < lb[1] or ry1 > lb[3]):
+                        lb[0] = min(lb[0], rx1)
+                        lb[1] = min(lb[1], ry1)
+                        lb[2] = max(lb[2], rx2)
+                        lb[3] = max(lb[3], ry2)
+                        merged = True
+                        break
+                if not merged:
+                    line_boxes.append([rx1, ry1, rx2, ry2])
+
+            for bx1, by1, bx2, by2 in line_boxes:
+                wx = pix_x + bx1 * sx
+                wy = pix_y + by1 * sy
+                ww = max(2.0, (bx2 - bx1) * sx)
+                wh = max(2.0, (by2 - by1) * sy)
+
+                cr.set_source_rgba(0.0, 0.85, 1.0, 0.32)
+                cr.rectangle(wx, wy, ww, wh)
+                cr.fill()
+
+                cr.set_source_rgba(0.0, 0.90, 1.0, 0.65)
+                cr.set_line_width(1.0)
+                cr.rectangle(wx, wy, ww, wh)
+                cr.stroke()
+
+        # 2. Hovered hyperlink glow & underline
+        if getattr(self, "_hovered_link", None):
+            lx1, ly1, lx2, ly2 = self._hovered_link["rect"]
+            wx = pix_x + lx1 * sx
+            wy = pix_y + ly1 * sy
+            ww = max(2.0, (lx2 - lx1) * sx)
+            wh = max(2.0, (ly2 - ly1) * sy)
+
+            cr.set_source_rgba(0.0, 0.90, 1.0, 0.15)
+            cr.rectangle(wx, wy, ww, wh)
+            cr.fill()
+
+            cr.set_source_rgba(0.0, 0.95, 1.0, 0.90)
+            cr.set_line_width(1.5)
+            cr.move_to(wx, wy + wh)
+            cr.line_to(wx + ww, wy + wh)
+            cr.stroke()
+
+        return False
+
+    def _update_pdf_hover_cursor(self, is_ctrl: Optional[bool] = None):
+        """Update cursor and link highlight when Ctrl key is pressed or released."""
+        if self.get_view_mode() != "pdf":
+            return
+        if not hasattr(self, "pdf_event_box") or not self.pdf_event_box.get_realized():
+            return
+        win = self.pdf_event_box.get_window()
+        if not win:
+            return
+        disp = win.get_display()
+        seat = disp.get_default_seat() if hasattr(disp, "get_default_seat") else None
+        dev = seat.get_pointer() if seat else None
+        if not dev:
+            return
+        _screen, x, y, mask = win.get_device_position(dev)
+        if is_ctrl is None:
+            is_ctrl = bool(mask & Gdk.ModifierType.CONTROL_MASK)
+
+        metrics = self._get_pdf_page_metrics()
+        if not metrics:
+            return
+        pix_x, pix_y, pw, ph, page_w, page_h = metrics
+        off_x = x - pix_x
+        off_y = y - pix_y
+        if 0 <= off_x <= pw and 0 <= off_y <= ph:
+            px = off_x / (pw / page_w)
+            py = off_y / (ph / page_h)
+            link = self._find_link_at(px, py)
+            if link:
+                if is_ctrl:
+                    self._set_pdf_cursor("pointer")
+                    self.pdf_event_box.set_tooltip_text(f"Follow link: {link['target']}")
+                    if self._hovered_link != link:
+                        self._hovered_link = link
+                        self.pdf_event_box.queue_draw()
+                    return
+                else:
+                    self.pdf_event_box.set_tooltip_text(f"Ctrl + Click to follow link: {link['target']}")
+                    if self._hovered_link is not None:
+                        self._hovered_link = None
+                        self.pdf_event_box.queue_draw()
+            else:
+                self.pdf_event_box.set_tooltip_text(None)
+                if self._hovered_link is not None:
+                    self._hovered_link = None
+                    self.pdf_event_box.queue_draw()
+
+            ci = self._find_char_at(px, py)
+            if ci is not None:
+                self._set_pdf_cursor("xterm")
+                return
+
+        self._update_pan_cursor(gripping=False)
+
+    def _copy_to_clipboard(self, text: str):
+        if not text:
+            return
+        clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clip.set_text(text, -1)
+
+    def _select_all_pdf(self):
+        if self._page_text:
+            self._set_pdf_selection(0, len(self._page_text))
+            try:
+                clip = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+                clip.set_text(self._selected_text, -1)
+            except Exception:
+                pass
+            if hasattr(self, "pdf_event_box"):
+                self.pdf_event_box.queue_draw()
+
+    def _show_pdf_context_menu(self, event, pdf_x: Optional[float] = None, pdf_y: Optional[float] = None):
+        menu = Gtk.Menu()
+
+        link = self._find_link_at(pdf_x, pdf_y) if pdf_x is not None and pdf_y is not None else None
+        if link:
+            item_open = Gtk.MenuItem(label="Open Link")
+            target = link["target"]
+            l_type = link["type"]
+            if l_type == "uri":
+                item_open.connect("activate", lambda i: self.open_hyperlink(target))
+            else:
+                item_open.connect("activate", lambda i: self.goto_pdf_page(target))
+            menu.append(item_open)
+
+            item_copy_link = Gtk.MenuItem(label="Copy Link Address")
+            item_copy_link.connect("activate", lambda i: self._copy_to_clipboard(str(target)))
+            menu.append(item_copy_link)
+
+            menu.append(Gtk.SeparatorMenuItem())
+
+        item_copy = Gtk.MenuItem(label="Copy")
+        item_copy.set_sensitive(bool(self._selected_text))
+        item_copy.connect("activate", lambda i: self._copy_to_clipboard(self._selected_text))
+        menu.append(item_copy)
+
+        item_sel_all = Gtk.MenuItem(label="Select All")
+        item_sel_all.connect("activate", lambda i: self._select_all_pdf())
+        menu.append(item_sel_all)
+
+        menu.show_all()
+        if hasattr(menu, "popup_at_pointer"):
+            menu.popup_at_pointer(event)
+        else:
+            menu.popup(None, None, None, None, 3, Gtk.get_current_event_time())
+
     def _on_pan_button_press(self, widget, event):
-        """Grip the page on left or middle mouse click when zoomed in."""
+        """Handle clicks for text selection, Ctrl+Click hyperlinks, and drag panning."""
+        if self.get_view_mode() != "pdf":
+            return False
+
         btn = self._get_event_button(event)
-        if self.get_view_mode() == "pdf" and btn in (1, 2):
-            if self._is_pdf_pannable():
-                self._is_panning = True
-                rx, ry = self._get_event_root_coords(event)
-                self._pan_start_x = rx
-                self._pan_start_y = ry
-                vadj = self.scrolled_pdf.get_vadjustment()
-                hadj = self.scrolled_pdf.get_hadjustment()
-                self._pan_start_v_val = vadj.get_value() if vadj else 0.0
-                self._pan_start_h_val = hadj.get_value() if hadj else 0.0
-                self._pan_has_moved = False
-                self._update_pan_cursor(gripping=True)
+        coords = self._event_to_pdf_coords(widget, event)
+        pdf_x = coords[0] if coords else None
+        pdf_y = coords[1] if coords else None
+
+        # Right-click context menu
+        if btn == 3:
+            self._show_pdf_context_menu(event, pdf_x, pdf_y)
+            return True
+
+        state = getattr(event, "state", 0)
+        is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+
+        # Ctrl + Click to follow link
+        if btn == 1 and is_ctrl and coords:
+            link = self._find_link_at(coords[0], coords[1])
+            if link:
+                if link["type"] == "uri":
+                    self.open_hyperlink(link["target"])
+                    return True
+                elif link["type"] == "page":
+                    self.goto_pdf_page(link["target"])
+                    return True
+
+        ev_type = getattr(event, "type", None)
+        # Double-click word selection
+        if ev_type == Gdk.EventType._2BUTTON_PRESS and btn == 1 and coords:
+            ci = self._find_char_at(coords[0], coords[1])
+            if ci is not None:
+                s, e = self._expand_to_word(ci)
+                self._set_pdf_selection(s, e)
+                try:
+                    clip = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+                    clip.set_text(self._selected_text, -1)
+                except Exception:
+                    pass
+                self.pdf_event_box.queue_draw()
                 return True
+
+        # Triple-click line selection
+        if ev_type == Gdk.EventType._3BUTTON_PRESS and btn == 1 and coords:
+            ci = self._find_char_at(coords[0], coords[1])
+            if ci is not None:
+                s, e = self._expand_to_line(ci)
+                self._set_pdf_selection(s, e)
+                try:
+                    clip = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+                    clip.set_text(self._selected_text, -1)
+                except Exception:
+                    pass
+                self.pdf_event_box.queue_draw()
+                return True
+
+        # Single Left Click: Check if clicking over text
+        if btn == 1 and coords:
+            ci = self._find_char_at(coords[0], coords[1])
+            if ci is not None:
+                self._is_selecting_text = True
+                self._sel_anchor_idx = ci
+                self._set_pdf_selection(ci, ci + 1)
+                self.pdf_event_box.queue_draw()
+                return True
+            else:
+                self._clear_pdf_selection()
+                self.pdf_event_box.queue_draw()
+
+        # Middle click (btn 2) or left click on margin/empty space: initiate pan if pannable
+        if btn in (1, 2) and self._is_pdf_pannable():
+            self._is_panning = True
+            rx, ry = self._get_event_root_coords(event)
+            self._pan_start_x = rx
+            self._pan_start_y = ry
+            vadj = self.scrolled_pdf.get_vadjustment()
+            hadj = self.scrolled_pdf.get_hadjustment()
+            self._pan_start_v_val = vadj.get_value() if vadj else 0.0
+            self._pan_start_h_val = hadj.get_value() if hadj else 0.0
+            self._pan_has_moved = False
+            self._update_pan_cursor(gripping=True)
+            return True
+
         return False
 
     def _on_pan_motion_notify(self, widget, event):
-        """Move the page smoothly with the cursor while gripping."""
-        if self.get_view_mode() == "pdf":
-            if getattr(self, "_is_panning", False):
-                rx, ry = self._get_event_root_coords(event)
-                dx = rx - self._pan_start_x
-                dy = ry - self._pan_start_y
-                if abs(dx) > 1 or abs(dy) > 1:
-                    self._pan_has_moved = True
+        """Move the page while gripping, expand text selection while dragging, or update hover cursor."""
+        if self.get_view_mode() != "pdf":
+            return False
 
-                vadj = self.scrolled_pdf.get_vadjustment()
-                hadj = self.scrolled_pdf.get_hadjustment()
+        # 1. Panning in progress
+        if getattr(self, "_is_panning", False):
+            rx, ry = self._get_event_root_coords(event)
+            dx = rx - self._pan_start_x
+            dy = ry - self._pan_start_y
+            if abs(dx) > 1 or abs(dy) > 1:
+                self._pan_has_moved = True
 
-                if vadj:
-                    v_min = vadj.get_lower()
-                    v_max = max(v_min, vadj.get_upper() - vadj.get_page_size())
-                    target_v = self._pan_start_v_val - dy
-                    vadj.set_value(max(v_min, min(target_v, v_max)))
+            vadj = self.scrolled_pdf.get_vadjustment()
+            hadj = self.scrolled_pdf.get_hadjustment()
 
-                if hadj:
-                    h_min = hadj.get_lower()
-                    h_max = max(h_min, hadj.get_upper() - hadj.get_page_size())
-                    target_h = self._pan_start_h_val - dx
-                    hadj.set_value(max(h_min, min(target_h, h_max)))
+            if vadj:
+                v_min = vadj.get_lower()
+                v_max = max(v_min, vadj.get_upper() - vadj.get_page_size())
+                target_v = self._pan_start_v_val - dy
+                vadj.set_value(max(v_min, min(target_v, v_max)))
 
-                return True
+            if hadj:
+                h_min = hadj.get_lower()
+                h_max = max(h_min, hadj.get_upper() - hadj.get_page_size())
+                target_h = self._pan_start_h_val - dx
+                hadj.set_value(max(h_min, min(target_h, h_max)))
+
+            return True
+
+        # 2. Text selection in progress
+        if getattr(self, "_is_selecting_text", False):
+            coords = self._event_to_pdf_coords(widget, event)
+            if coords:
+                ci = self._find_char_at(coords[0], coords[1])
+                if ci is not None and self._sel_anchor_idx is not None:
+                    start = min(self._sel_anchor_idx, ci)
+                    end = max(self._sel_anchor_idx, ci) + 1
+                    self._set_pdf_selection(start, end)
+                    self.pdf_event_box.queue_draw()
+            return True
+
+        # 3. Hovering over PDF (link hover, text I-beam, or pan grab hand)
+        coords = self._event_to_pdf_coords(widget, event)
+        state = getattr(event, "state", 0)
+        is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+
+        if coords:
+            link = self._find_link_at(coords[0], coords[1])
+            if link:
+                if is_ctrl:
+                    self._set_pdf_cursor("pointer")
+                    self.pdf_event_box.set_tooltip_text(f"Follow link: {link['target']}")
+                    if self._hovered_link != link:
+                        self._hovered_link = link
+                        self.pdf_event_box.queue_draw()
+                    return False
+                else:
+                    self.pdf_event_box.set_tooltip_text(f"Ctrl + Click to follow link: {link['target']}")
+                    if self._hovered_link is not None:
+                        self._hovered_link = None
+                        self.pdf_event_box.queue_draw()
             else:
-                self._update_pan_cursor(gripping=False)
+                self.pdf_event_box.set_tooltip_text(None)
+                if self._hovered_link is not None:
+                    self._hovered_link = None
+                    self.pdf_event_box.queue_draw()
+
+            ci = self._find_char_at(coords[0], coords[1])
+            if ci is not None:
+                self._set_pdf_cursor("xterm")
+                return False
+
+        self._update_pan_cursor(gripping=False)
         return False
 
     def _on_pan_button_release(self, widget, event):
-        """Release the gripped page when mouse button is released."""
+        """Release the gripped page or finalize text selection."""
         if getattr(self, "_is_panning", False):
             self._is_panning = False
             self._update_pan_cursor(gripping=False)
             return True
+
+        if getattr(self, "_is_selecting_text", False):
+            self._is_selecting_text = False
+            if self._selected_text:
+                try:
+                    clip = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+                    clip.set_text(self._selected_text, -1)
+                except Exception:
+                    pass
+            return True
+
         return False
 
     def _on_pan_enter_notify(self, widget, event):
@@ -703,12 +1204,171 @@ class DocViewer(Gtk.Box):
         return False
 
     def _on_pan_leave_notify(self, widget, event):
+        if getattr(self, "_hovered_link", None) is not None:
+            self._hovered_link = None
+            if hasattr(self, "pdf_event_box"):
+                self.pdf_event_box.queue_draw()
+                self.pdf_event_box.set_tooltip_text(None)
         return False
 
     def _on_pan_grab_broken(self, widget, event):
         if getattr(self, "_is_panning", False):
             self._is_panning = False
             self._update_pan_cursor(gripping=False)
+        if getattr(self, "_is_selecting_text", False):
+            self._is_selecting_text = False
+        return False
+
+    # --------------------------------------------------------------------------
+    # Universal Hyperlink Navigation (Ctrl + Click)
+    # --------------------------------------------------------------------------
+    def open_hyperlink(self, target_url: str):
+        """Open web links in default system browser, or local files in a new DocuPad tab."""
+        if not target_url:
+            return
+        target_str = str(target_url).strip()
+
+        # If it's a local file URL or file path
+        parsed_path = None
+        if target_str.startswith("file://"):
+            p = urllib.parse.urlparse(target_str).path
+            parsed_path = urllib.parse.unquote(p)
+        elif target_str.startswith(("/", "./", "../", "~/")):
+            parsed_path = os.path.abspath(os.path.expanduser(target_str))
+        elif not (target_str.startswith("http://") or target_str.startswith("https://") or target_str.startswith("mailto:")):
+            if self.file_path:
+                candidate = os.path.abspath(os.path.join(os.path.dirname(self.file_path), target_str))
+                if os.path.exists(candidate):
+                    parsed_path = candidate
+
+        if parsed_path and os.path.exists(parsed_path):
+            self.emit("open-file-requested", parsed_path)
+            return
+
+        # Otherwise launch default web browser or application via Gio / webbrowser
+        try:
+            Gio.AppInfo.launch_default_for_uri(target_str, None)
+        except Exception:
+            try:
+                import webbrowser
+                webbrowser.open(target_str)
+            except Exception:
+                pass
+
+    def _find_source_url_at(self, x: int, y: int) -> Optional[str]:
+        """Find URL or markdown link under source view buffer coordinates (x, y)."""
+        bx, by = self.source_view.window_to_buffer_coords(Gtk.TextWindowType.TEXT, x, y)
+        res = self.source_view.get_iter_at_location(bx, by)
+        iter_at = res[1] if isinstance(res, tuple) else res
+        if not iter_at:
+            return None
+        line_start = iter_at.copy()
+        line_start.set_line_offset(0)
+        line_end = iter_at.copy()
+        if not line_end.ends_line():
+            line_end.forward_to_line_end()
+        line_text = self.source_buffer.get_text(line_start, line_end, False)
+        char_offset = iter_at.get_line_offset()
+
+        # Check markdown links first: [text](target)
+        for m in self._MD_LINK_REGEX.finditer(line_text):
+            if m.start() <= char_offset <= m.end():
+                return m.group(2).strip()
+
+        # Check direct URLs
+        for m in self._URL_REGEX.finditer(line_text):
+            if m.start() <= char_offset <= m.end():
+                return m.group(0).strip()
+
+        return None
+
+    def _update_source_cursor(self, is_ctrl: bool, url: Optional[str] = None):
+        if is_ctrl and url:
+            self.source_view.set_tooltip_text(f"Ctrl + Click to follow link: {url}")
+        else:
+            self.source_view.set_tooltip_text(None)
+
+        gdk_win = self.source_view.get_window(Gtk.TextWindowType.TEXT)
+        if not gdk_win:
+            return
+        disp = gdk_win.get_display()
+        if is_ctrl and url:
+            cur = Gdk.Cursor.new_from_name(disp, "pointer")
+            if not cur:
+                cur = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.HAND2)
+            gdk_win.set_cursor(cur)
+        else:
+            cur = Gdk.Cursor.new_from_name(disp, "xterm")
+            if not cur:
+                cur = Gdk.Cursor.new_for_display(disp, Gdk.CursorType.XTERM)
+            gdk_win.set_cursor(cur)
+
+    def _on_source_motion_notify(self, widget, event):
+        state = getattr(event, "state", 0)
+        is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        url = self._find_source_url_at(int(event.x), int(event.y))
+        self._source_hovered_url = url
+        self._update_source_cursor(is_ctrl, url)
+        return False
+
+    def _on_source_button_press(self, widget, event):
+        btn = self._get_event_button(event)
+        state = getattr(event, "state", 0)
+        is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if btn == 1 and is_ctrl:
+            url = self._find_source_url_at(int(event.x), int(event.y))
+            if url:
+                self.open_hyperlink(url)
+                return True
+        return False
+
+    def _on_source_key_press(self, widget, event):
+        kv = getattr(event, "keyval", 0)
+        if kv in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
+            if self._source_hovered_url:
+                self._update_source_cursor(True, self._source_hovered_url)
+        return False
+
+    def _on_source_key_release(self, widget, event):
+        kv = getattr(event, "keyval", 0)
+        if kv in (Gdk.KEY_Control_L, Gdk.KEY_Control_R):
+            self._update_source_cursor(False, self._source_hovered_url)
+        return False
+
+    def _on_source_leave_notify(self, widget, event):
+        self._source_hovered_url = None
+        self._update_source_cursor(False, None)
+        return False
+
+    def _on_source_populate_popup(self, view, menu):
+        if self._source_hovered_url:
+            sep = Gtk.SeparatorMenuItem()
+            menu.prepend(sep)
+            item_copy = Gtk.MenuItem(label="Copy Link Address")
+            item_copy.connect("activate", lambda i: self._copy_to_clipboard(self._source_hovered_url))
+            menu.prepend(item_copy)
+            item_open = Gtk.MenuItem(label="Open Link")
+            item_open.connect("activate", lambda i: self.open_hyperlink(self._source_hovered_url))
+            menu.prepend(item_open)
+            menu.show_all()
+
+    def _on_web_view_decide_policy(self, web_view, decision, decision_type):
+        if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
+            try:
+                action = decision.get_navigation_action() if hasattr(decision, "get_navigation_action") else None
+                if action:
+                    nav_type = action.get_navigation_type()
+                    req = action.get_request()
+                else:
+                    nav_type = decision.get_navigation_type()
+                    req = decision.get_request()
+                uri = req.get_uri() if req else None
+                if nav_type == WebKit2.NavigationType.LINK_CLICKED and uri:
+                    decision.ignore()
+                    self.open_hyperlink(uri)
+                    return True
+            except Exception:
+                pass
         return False
 
     # --------------------------------------------------------------------------
@@ -791,6 +1451,16 @@ class DocViewer(Gtk.Box):
         self.btn_pdf_prev.set_sensitive(self.current_pdf_page > 1)
         self.btn_pdf_next.set_sensitive(self.current_pdf_page < self.pdf_renderer.page_count)
 
+        # Update text layout and links for current page
+        try:
+            self._page_text, self._page_char_rects = self.pdf_renderer.get_page_text_layout(self.current_pdf_page)
+            self._page_links = self.pdf_renderer.get_page_links(self.current_pdf_page)
+        except Exception:
+            self._page_text, self._page_char_rects, self._page_links = "", [], []
+        self._clear_pdf_selection()
+        if hasattr(self, "pdf_event_box"):
+            self.pdf_event_box.queue_draw()
+
         if sync:
             timer = getattr(self, "_pdf_debounce_timer", None)
             if timer:
@@ -806,6 +1476,8 @@ class DocViewer(Gtk.Box):
                 self._current_page_base_w = max(10.0, pix.get_width() / scale)
                 self._current_page_base_h = max(10.0, pix.get_height() / scale)
                 self.pdf_image.set_from_pixbuf(pix)
+                if hasattr(self, "pdf_event_box"):
+                    self.pdf_event_box.queue_draw()
                 self._update_pan_cursor(gripping=getattr(self, "_is_panning", False))
             return
 
@@ -855,6 +1527,8 @@ class DocViewer(Gtk.Box):
         self._current_page_base_w = max(10.0, pixbuf.get_width() / scale)
         self._current_page_base_h = max(10.0, pixbuf.get_height() / scale)
         self.pdf_image.set_from_pixbuf(pixbuf)
+        if hasattr(self, "pdf_event_box"):
+            self.pdf_event_box.queue_draw()
         self._update_pan_cursor(gripping=getattr(self, "_is_panning", False))
 
     # --------------------------------------------------------------------------

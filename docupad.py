@@ -488,6 +488,7 @@ class DocuPadWindow(Gtk.ApplicationWindow):
         viewer.connect("zoom-changed", self._on_zoom_changed)
         viewer.connect("file-saved", lambda v, p: self._update_tab_title(v))
         viewer.connect("outline-updated", lambda v: self.refresh_outline())
+        viewer.connect("open-file-requested", lambda v, path: self.new_tab(path))
 
         tab_box = self._create_tab_label(viewer)
         idx = self.notebook_tabs.append_page(viewer, tab_box)

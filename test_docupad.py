@@ -793,5 +793,206 @@ class TestViewerAndAssets(unittest.TestCase):
                 pass
 
 
+class TestTextSelectionAndHyperlinks(unittest.TestCase):
+    """Test PDF text selection, Cairo overlays, clipboard copying, and Ctrl+Click hyperlinks."""
+
+    def test_pdf_text_selection_and_expansion(self):
+        tmp_dir = tempfile.mkdtemp(prefix="docupad_sel_test_")
+        pdf_path = os.path.join(tmp_dir, "text_test.pdf")
+        try:
+            surf = cairo.PDFSurface(pdf_path, 595, 842)
+            cr = cairo.Context(surf)
+            cr.select_font_face("Sans")
+            cr.set_font_size(24)
+            cr.move_to(50, 100)
+            cr.show_text("Hello DocuPad World")
+            cr.move_to(50, 140)
+            cr.show_text("Second line of document")
+            surf.show_page()
+            surf.finish()
+
+            viewer = DocViewer()
+            loaded = viewer.load_file(pdf_path)
+            self.assertTrue(loaded)
+            self.assertEqual(viewer.get_view_mode(), "pdf")
+
+            # Let GTK process initial idle/rendering tasks
+            for _ in range(20):
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+
+            self.assertIn("Hello DocuPad World", viewer._page_text)
+            self.assertGreater(len(viewer._page_char_rects), 10)
+
+            # 1. Test character hit testing
+            # First character 'H' is around x=50, y=80-105
+            char_idx = viewer._find_char_at(55.0, 95.0)
+            self.assertIsNotNone(char_idx)
+            self.assertEqual(viewer._page_text[char_idx], "H")
+
+            # 2. Test word expansion: "Hello"
+            w_start, w_end = viewer._expand_to_word(char_idx)
+            self.assertEqual(viewer._page_text[w_start:w_end], "Hello")
+
+            # 3. Test line expansion: "Hello DocuPad World"
+            l_start, l_end = viewer._expand_to_line(char_idx)
+            self.assertEqual(viewer._page_text[l_start:l_end], "Hello DocuPad World")
+
+            # 4. Test setting selection range
+            viewer._set_pdf_selection(w_start, w_end)
+            self.assertEqual(viewer._selected_text, "Hello")
+            self.assertEqual(viewer._selected_range, (w_start, w_end))
+
+            # 5. Test clipboard copying
+            viewer._copy_to_clipboard(viewer._selected_text)
+            clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            self.assertEqual(clip.wait_for_text(), "Hello")
+
+            # 6. Test select all
+            viewer._select_all_pdf()
+            self.assertEqual(viewer._selected_range, (0, len(viewer._page_text)))
+            self.assertEqual(viewer._selected_text, viewer._page_text)
+
+            # 7. Test clear selection
+            viewer._clear_pdf_selection()
+            self.assertIsNone(viewer._selected_range)
+            self.assertEqual(viewer._selected_text, "")
+
+            # 8. Test Cairo overlay drawing runs with active selection without error
+            viewer._set_pdf_selection(0, 5)
+            img_surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, 800)
+            test_cr = cairo.Context(img_surf)
+            res = viewer._on_draw_pdf_overlay(viewer.pdf_event_box, test_cr)
+            self.assertFalse(res)  # Draws cleanly and returns False to allow GTK propagation
+
+        finally:
+            viewer.pdf_renderer.cleanup()
+            if os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+    def test_source_view_url_detection_and_cursor(self):
+        viewer = DocViewer()
+        sample_doc = (
+            "# Links Guide\n\n"
+            "Visit our website at https://github.com/bluechile/docupad for updates.\n"
+            "Or read the [DocuPad Manual](https://docupad.org/docs) online.\n"
+            "Contact: mailto:dev@docupad.org\n"
+        )
+        viewer.set_text(sample_doc)
+        viewer.set_view_mode("source")
+
+        for _ in range(10):
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+
+        # Test regex detection directly on text lines
+        matches_urls = viewer._URL_REGEX.findall(sample_doc)
+        self.assertIn("https://github.com/bluechile/docupad", matches_urls)
+        self.assertIn("https://docupad.org/docs", matches_urls)
+        self.assertIn("mailto:dev@docupad.org", matches_urls)
+
+        md_matches = [m.group(2) for m in viewer._MD_LINK_REGEX.finditer(sample_doc)]
+        self.assertIn("https://docupad.org/docs", md_matches)
+
+        # Test updating cursor with Ctrl modifier
+        viewer._update_source_cursor(is_ctrl=True, url="https://github.com/bluechile/docupad")
+        self.assertEqual(viewer.source_view.get_tooltip_text(), "Ctrl + Click to follow link: https://github.com/bluechile/docupad")
+
+        viewer._update_source_cursor(is_ctrl=False, url=None)
+        self.assertIsNone(viewer.source_view.get_tooltip_text())
+
+    def test_open_hyperlink_emits_signal_for_local_files(self):
+        viewer = DocViewer()
+        received_paths = []
+        viewer.connect("open-file-requested", lambda v, path: received_paths.append(path))
+
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            # 1. file:// URI
+            viewer.open_hyperlink(f"file://{tmp_path}")
+            self.assertEqual(len(received_paths), 1)
+            self.assertEqual(received_paths[0], tmp_path)
+
+            # 2. direct absolute path
+            viewer.open_hyperlink(tmp_path)
+            self.assertEqual(len(received_paths), 2)
+            self.assertEqual(received_paths[1], tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_pdf_hyperlink_finding_and_hover(self):
+        viewer = DocViewer()
+        viewer._page_links = [
+            {"rect": (100.0, 200.0, 300.0, 220.0), "type": "uri", "target": "https://docupad.org", "title": "DocuPad"},
+            {"rect": (100.0, 250.0, 300.0, 270.0), "type": "page", "target": 5, "title": "Chapter 5"},
+        ]
+
+        # 1. Hit testing inside link 1
+        link1 = viewer._find_link_at(150.0, 210.0)
+        self.assertIsNotNone(link1)
+        self.assertEqual(link1["target"], "https://docupad.org")
+        self.assertEqual(link1["type"], "uri")
+
+        # 2. Hit testing inside link 2
+        link2 = viewer._find_link_at(200.0, 260.0)
+        self.assertIsNotNone(link2)
+        self.assertEqual(link2["target"], 5)
+        self.assertEqual(link2["type"], "page")
+
+        # 3. Hit testing outside links
+        self.assertIsNone(viewer._find_link_at(50.0, 50.0))
+
+    def test_webkit_decide_policy_intercepts_link_clicks(self):
+        viewer = DocViewer()
+        opened_links = []
+        viewer.open_hyperlink = lambda url: opened_links.append(url)
+
+        class MockRequest:
+            def get_uri(self):
+                return "https://example.com/page"
+
+        class MockAction:
+            def get_navigation_type(self):
+                from gi.repository import WebKit2
+                return WebKit2.NavigationType.LINK_CLICKED
+
+            def get_request(self):
+                return MockRequest()
+
+        class MockDecision:
+            def __init__(self):
+                self.ignored = False
+
+            def get_navigation_action(self):
+                return MockAction()
+
+            def get_navigation_type(self):
+                from gi.repository import WebKit2
+                return WebKit2.NavigationType.LINK_CLICKED
+
+            def get_request(self):
+                return MockRequest()
+
+            def ignore(self):
+                self.ignored = True
+
+        from gi.repository import WebKit2
+        decision = MockDecision()
+        handled = viewer._on_web_view_decide_policy(None, decision, WebKit2.PolicyDecisionType.NAVIGATION_ACTION)
+
+        self.assertTrue(handled)
+        self.assertTrue(decision.ignored)
+        self.assertEqual(opened_links, ["https://example.com/page"])
+
+
 if __name__ == "__main__":
     unittest.main()
