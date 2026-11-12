@@ -38,6 +38,8 @@ A fast, modern **Document Viewer, Reader, and Markdown/PDF Companion Application
 ## Installation
 
 ```bash
+git clone https://github.com/kyledeanml/docupanel.git
+cd docupanel
 ./install.sh
 ```
 
@@ -46,6 +48,8 @@ The installer automatically:
 - Installs the desktop launcher (`~/.local/share/applications/docupanel.desktop`) with `StartupWMClass=docupanel`.
 - Creates the CLI command symlink at `~/.local/bin/docupanel`.
 - Registers DocuPanel as the default viewer for `.md` and `.rst` files and pins DocuPanel to your Cinnamon Menu favorites.
+
+You can launch DocuPanel anytime from the Cinnamon Menu or terminal (`docupanel /path/to/document.pdf`).
 
 ---
 
