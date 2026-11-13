@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<style-scheme id="docupanel-light" _name="DocuPanel Crisp Light &amp; Cyan" version="1.0">
+  <author>DocuPanel</author>
+  <_description>Light mode document viewer theme with crisp dark slate text and cyan-blue accents</_description>
+
+  <!-- Palette -->
+  <color name="bg_paper"      value="#ffffff"/>
+  <color name="bg_gutter"     value="#f1f5f9"/>
+  <color name="bg_current"    value="#e0f2fe"/>
+  <color name="bg_selection"  value="#bae6fd"/>
+  <color name="ink_deep"      value="#0f172a"/>
+  <color name="ink_soft"      value="#334155"/>
+  <color name="cyan_deep"     value="#0284c7"/>
+  <color name="blue_bold"     value="#0369a1"/>
+  <color name="teal_accent"   value="#0d9488"/>
+  <color name="sky_mid"       value="#2563eb"/>
+  <color name="muted_slate"   value="#64748b"/>
+  <color name="violet_deep"   value="#7c3aed"/>
+  <color name="rose_err"      value="#e11d48"/>
+  <color name="white_pure"    value="#ffffff"/>
+
+  <!-- Global Settings -->
+  <style name="text"                        foreground="ink_deep" background="bg_paper"/>
+  <style name="selection"                   foreground="ink_deep" background="bg_selection"/>
+  <style name="cursor"                      foreground="cyan_deep"/>
+  <style name="secondary-cursor"            foreground="sky_mid"/>
+  <style name="current-line"                background="bg_current"/>
+  <style name="current-line-number"         foreground="cyan_deep" background="bg_current" bold="true"/>
+  <style name="line-numbers"                foreground="muted_slate" background="bg_gutter"/>
+  <style name="draw-spaces"                 foreground="muted_slate"/>
+  <style name="background-pattern"          background="bg_paper"/>
+  <style name="bracket-match"               foreground="cyan_deep" background="bg_current" bold="true"/>
+  <style name="bracket-mismatch"            foreground="white_pure" background="rose_err" bold="true"/>
+  <style name="search-match"                foreground="white_pure" background="cyan_deep" bold="true"/>
+
+  <!-- Syntax & Document Highlighting -->
+  <style name="def:comment"                 foreground="muted_slate" italic="true"/>
+  <style name="def:shebang"                 foreground="muted_slate" bold="true"/>
+  <style name="def:doc-comment-element"     foreground="ink_soft" italic="true"/>
+  <style name="def:constant"                foreground="teal_accent"/>
+  <style name="def:string"                  foreground="blue_bold"/>
+  <style name="def:special-char"            foreground="cyan_deep" bold="true"/>
+  <style name="def:number"                  foreground="teal_accent"/>
+  <style name="def:floating-point"          foreground="teal_accent"/>
+  <style name="def:boolean"                 foreground="cyan_deep" bold="true"/>
+  <style name="def:keyword"                 foreground="sky_mid" bold="true"/>
+  <style name="def:statement"               foreground="sky_mid" bold="true"/>
+  <style name="def:type"                    foreground="cyan_deep" bold="true"/>
+  <style name="def:function"                foreground="ink_deep" bold="true"/>
+  <style name="def:identifier"              foreground="ink_deep"/>
+  <style name="def:preprocessor"            foreground="violet_deep"/>
+  <style name="def:Heading"                 foreground="cyan_deep" bold="true"/>
+  <style name="def:link-text"               foreground="sky_mid" underline="single"/>
+  <style name="def:link-destination"        foreground="cyan_deep" italic="true"/>
+  <style name="def:emphasis"                foreground="ink_soft" italic="true"/>
+  <style name="def:strong-emphasis"         foreground="blue_bold" bold="true"/>
+  <style name="def:inline-code"             foreground="blue_bold"/>
+  <style name="def:error"                   foreground="white_pure" background="rose_err" bold="true"/>
+</style-scheme>

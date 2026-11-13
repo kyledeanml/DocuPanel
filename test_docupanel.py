@@ -1192,5 +1192,148 @@ class TestPDFChaptersAndBookmarks(unittest.TestCase):
                 pass
 
 
+class TestDarkModeToggle(unittest.TestCase):
+    """Test DocuPanel global Dark/Light mode toggle and PDF Dark Reading mode."""
+
+    def test_docupanel_light_and_neon_schemes_available(self):
+        manager = GtkSource.StyleSchemeManager.get_default()
+        ids = manager.get_scheme_ids()
+        self.assertIn("docupanel-neon", ids)
+        self.assertIn("docupanel-light", ids)
+
+    def test_markdown_to_html_dark_and_light_modes(self):
+        md = "# Dark Mode Check\n\nParagraph with `code`."
+        dark_html = DocumentParser.render_markdown_to_html(md, doc_type="markdown", dark_mode=True)
+        light_html = DocumentParser.render_markdown_to_html(md, doc_type="markdown", dark_mode=False)
+        self.assertIn("color-scheme: dark;", dark_html)
+        self.assertIn("background-color: #0a0e1a;", dark_html)
+        self.assertIn("color-scheme: light;", light_html)
+        self.assertIn("background-color: #ffffff;", light_html)
+
+    def test_pdf_renderer_dark_mode_surface_and_cache(self):
+        from doc_tools import PDFPageRenderer
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_dark_pdf_")
+        pdf_path = os.path.join(tmp_dir, "light_page.pdf")
+        try:
+            surf = cairo.PDFSurface(pdf_path, 200, 200)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0.0, 0.0, 0.0)
+            cr.select_font_face("Sans")
+            cr.set_font_size(18)
+            cr.move_to(20, 100)
+            cr.show_text("Dark PDF Test")
+            surf.show_page()
+            surf.finish()
+
+            renderer = PDFPageRenderer(pdf_path)
+            light_pix = renderer.render_page_pixbuf(1, scale=1.0, dark_mode=False)
+            dark_pix = renderer.render_page_pixbuf(1, scale=1.0, dark_mode=True)
+            self.assertIsNotNone(light_pix)
+            self.assertIsNotNone(dark_pix)
+
+            # Inspect top-left corner pixel (paper margin)
+            n_ch_l = light_pix.get_n_channels()
+            px_l = light_pix.get_pixels()
+            self.assertGreater(px_l[0], 240)
+            self.assertGreater(px_l[1], 240)
+            self.assertGreater(px_l[2], 240)
+            self.assertGreaterEqual(n_ch_l, 3)
+
+            px_d = dark_pix.get_pixels()
+            self.assertEqual((px_d[0], px_d[1], px_d[2]), (11, 15, 25))
+            renderer.cleanup()
+        finally:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+    def test_docupanel_window_dark_mode_and_pdf_dark_toggle(self):
+        has_display, _ = Gtk.init_check()
+        if not has_display:
+            self.skipTest("GUI display not available")
+
+        from docupanel import DocuPanelWindow
+
+        tmp_dir = tempfile.mkdtemp(prefix="docupanel_win_dark_")
+        md_path = os.path.join(tmp_dir, "notes.md")
+        pdf_path = os.path.join(tmp_dir, "sample.pdf")
+        try:
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write("# Hello\n\nLight and dark.")
+
+            surf = cairo.PDFSurface(pdf_path, 200, 200)
+            cr = cairo.Context(surf)
+            cr.set_source_rgb(0.0, 0.0, 0.0)
+            cr.move_to(20, 100)
+            cr.show_text("Sample")
+            surf.show_page()
+            surf.finish()
+
+            win = DocuPanelWindow(None, initial_files=[md_path, pdf_path])
+            try:
+                self.assertTrue(win.dark_mode)
+                self.assertTrue(win.btn_dark_mode.get_active())
+                self.assertTrue(win.chk_dark_mode.get_active())
+                self.assertEqual(win.current_theme, "docupanel-neon")
+
+                # Switch to Markdown tab and toggle Dark Mode OFF via headerbar button
+                win.notebook_tabs.set_current_page(0)
+                md_viewer = win.get_current_viewer()
+                self.assertEqual(md_viewer.source_buffer.get_style_scheme().get_id(), "docupanel-neon")
+
+                win.btn_dark_mode.set_active(False)
+                self.assertFalse(win.dark_mode)
+                self.assertFalse(win.chk_dark_mode.get_active())
+                self.assertEqual(win.current_theme, "docupanel-light")
+                self.assertEqual(win._dark_mode_lbl.get_text(), "Light")
+                self.assertEqual(md_viewer.source_buffer.get_style_scheme().get_id(), "docupanel-light")
+
+                # Toggle Dark Mode back ON
+                win.toggle_dark_mode()
+                self.assertTrue(win.dark_mode)
+                self.assertTrue(win.btn_dark_mode.get_active())
+                self.assertTrue(win.chk_dark_mode.get_active())
+                self.assertEqual(win.current_theme, "docupanel-neon")
+                self.assertEqual(md_viewer.source_buffer.get_style_scheme().get_id(), "docupanel-neon")
+
+                # Switch to PDF tab and toggle PDF Dark Reading Mode
+                win.notebook_tabs.set_current_page(1)
+                pdf_viewer = win.get_current_viewer()
+                self.assertFalse(pdf_viewer.pdf_dark_mode)
+                light_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
+                self.assertGreater(light_px[0], 240)
+
+                pdf_viewer.btn_pdf_dark.set_active(True)
+                self.assertTrue(pdf_viewer.pdf_dark_mode)
+                self.assertTrue(win.chk_pdf_dark.get_active())
+                dark_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
+                self.assertEqual((dark_px[0], dark_px[1], dark_px[2]), (11, 15, 25))
+
+                # Turning global Dark Mode OFF also restores Light PDF mode cleanly
+                win.set_dark_mode(False)
+                self.assertFalse(pdf_viewer.pdf_dark_mode)
+                self.assertFalse(win.chk_pdf_dark.get_active())
+                restored_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
+                self.assertGreater(restored_px[0], 240)
+            finally:
+                for i in range(win.notebook_tabs.get_n_pages()):
+                    v = win.notebook_tabs.get_nth_page(i)
+                    if getattr(v, "pdf_renderer", None):
+                        v.pdf_renderer.cleanup()
+                win.destroy()
+        finally:
+            for p in (md_path, pdf_path):
+                if os.path.exists(p):
+                    os.remove(p)
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()

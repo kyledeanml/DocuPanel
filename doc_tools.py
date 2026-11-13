@@ -235,8 +235,39 @@ class PopplerBridge:
             cls._libgobject.g_object_unref(page)
             return (pw.value, ph.value)
 
+    @staticmethod
+    def apply_dark_mode(surf: cairo.ImageSurface) -> cairo.ImageSurface:
+        """Transform a rendered page surface into night-mode dark navy (#0b0f19) while preserving color hues."""
+        if surf is None:
+            return surf
+        w = surf.get_width()
+        h = surf.get_height()
+        if w <= 0 or h <= 0:
+            return surf
+        orig = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        cr_orig = cairo.Context(orig)
+        cr_orig.set_source_surface(surf, 0, 0)
+        cr_orig.paint()
+
+        cr = cairo.Context(surf)
+        cr.set_operator(cairo.Operator.DIFFERENCE)
+        cr.set_source_rgb(1.0, 1.0, 1.0)
+        cr.paint()
+
+        # Restore original hue/saturation so accented headings/links keep cool colors
+        cr.set_operator(cairo.Operator.HSL_COLOR)
+        cr.set_source_surface(orig, 0, 0)
+        cr.paint()
+
+        # Clamp pure black paper background up to DocuPanel dark navy #0b0f19
+        cr.set_operator(cairo.Operator.LIGHTEN)
+        cr.set_source_rgb(11.0 / 255.0, 15.0 / 255.0, 25.0 / 255.0)
+        cr.paint()
+        surf.flush()
+        return surf
+
     @classmethod
-    def render_page(cls, doc_handle, page_index: int, scale: float = 1.0) -> Optional[cairo.ImageSurface]:
+    def render_page(cls, doc_handle, page_index: int, scale: float = 1.0, dark_mode: bool = False) -> Optional[cairo.ImageSurface]:
         if not doc_handle or not cls.is_available():
             return None
         with cls._lock:
@@ -258,6 +289,8 @@ class PopplerBridge:
 
                 c_cr = PycairoContext.from_address(id(cr)).ctx
                 cls._lib.poppler_page_render(page, c_cr)
+                if dark_mode:
+                    cls.apply_dark_mode(surf)
                 return surf
             finally:
                 cls._libgobject.g_object_unref(page)
@@ -740,9 +773,74 @@ class DocumentParser:
 
         return items
 
+    _HTML_PALETTES = {
+        True: {
+            "scheme": "dark",
+            "bg": "#0a0e1a",
+            "fg": "#f8fafc",
+            "h1": "#00f0ff",
+            "h1_border": "rgba(0, 240, 255, 0.35)",
+            "h2": "#38bdf8",
+            "h2_border": "rgba(56, 189, 248, 0.22)",
+            "h3": "#7dd3fc",
+            "link": "#00f0ff",
+            "link_border": "rgba(0, 240, 255, 0.5)",
+            "code_bg": "#111c33",
+            "code_fg": "#38bdf8",
+            "pre_bg": "#070a14",
+            "pre_border": "rgba(0, 240, 255, 0.28)",
+            "pre_accent": "#00f0ff",
+            "pre_fg": "#f0f9ff",
+            "quote_bg": "rgba(17, 28, 51, 0.7)",
+            "quote_accent": "#38bdf8",
+            "quote_fg": "#bae6fd",
+            "table_bg": "#0d1324",
+            "table_border": "rgba(0, 240, 255, 0.25)",
+            "cell_border": "rgba(56, 189, 248, 0.22)",
+            "th_bg": "#111c33",
+            "th_fg": "#00f0ff",
+            "tr_even": "#0b1020",
+            "hr": "rgba(0, 240, 255, 0.3)",
+        },
+        False: {
+            "scheme": "light",
+            "bg": "#ffffff",
+            "fg": "#0f172a",
+            "h1": "#0369a1",
+            "h1_border": "rgba(2, 132, 199, 0.3)",
+            "h2": "#0284c7",
+            "h2_border": "rgba(2, 132, 199, 0.2)",
+            "h3": "#0c4a6e",
+            "link": "#0284c7",
+            "link_border": "rgba(2, 132, 199, 0.45)",
+            "code_bg": "#f1f5f9",
+            "code_fg": "#0369a1",
+            "pre_bg": "#f8fafc",
+            "pre_border": "#cbd5e1",
+            "pre_accent": "#0284c7",
+            "pre_fg": "#0f172a",
+            "quote_bg": "#f0f9ff",
+            "quote_accent": "#0284c7",
+            "quote_fg": "#334155",
+            "table_bg": "#ffffff",
+            "table_border": "#cbd5e1",
+            "cell_border": "#e2e8f0",
+            "th_bg": "#f1f5f9",
+            "th_fg": "#0369a1",
+            "tr_even": "#f8fafc",
+            "hr": "rgba(2, 132, 199, 0.25)",
+        },
+    }
+
     @classmethod
-    def render_markdown_to_html(cls, text: str, doc_type: str = "markdown", file_path: Optional[str] = None) -> str:
-        """Convert Markdown, RST, CSV, JSON, or plain text into styled dark-neon HTML for rich reading."""
+    def render_markdown_to_html(
+        cls,
+        text: str,
+        doc_type: str = "markdown",
+        file_path: Optional[str] = None,
+        dark_mode: bool = True,
+    ) -> str:
+        """Convert Markdown, RST, CSV, JSON, or plain text into styled dark or light HTML for rich reading."""
         if doc_type == "html":
             return text
 
@@ -753,17 +851,18 @@ class DocumentParser:
         else:
             body_html = cls._markdown_to_html_body(text)
 
+        p = cls._HTML_PALETTES[bool(dark_mode)]
         return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   :root {{
-    color-scheme: dark;
+    color-scheme: {p["scheme"]};
   }}
   body {{
-    background-color: #0a0e1a;
-    color: #f8fafc;
+    background-color: {p["bg"]};
+    color: {p["fg"]};
     font-family: 'Inter', 'Ubuntu', 'DejaVu Sans', sans-serif;
     font-size: 16px;
     line-height: 1.7;
@@ -772,7 +871,7 @@ class DocumentParser:
     padding: 32px 40px 64px 40px;
   }}
   h1, h2, h3, h4, h5, h6 {{
-    color: #00f0ff;
+    color: {p["h1"]};
     font-weight: 700;
     margin-top: 1.5em;
     margin-bottom: 0.5em;
@@ -780,79 +879,79 @@ class DocumentParser:
   }}
   h1 {{
     font-size: 2.0em;
-    border-bottom: 1px solid rgba(0, 240, 255, 0.35);
+    border-bottom: 1px solid {p["h1_border"]};
     padding-bottom: 0.3em;
   }}
   h2 {{
     font-size: 1.5em;
-    color: #38bdf8;
-    border-bottom: 1px solid rgba(56, 189, 248, 0.22);
+    color: {p["h2"]};
+    border-bottom: 1px solid {p["h2_border"]};
     padding-bottom: 0.25em;
   }}
   h3 {{
     font-size: 1.25em;
-    color: #7dd3fc;
+    color: {p["h3"]};
   }}
   p {{
     margin: 0.85em 0;
   }}
   a {{
-    color: #00f0ff;
+    color: {p["link"]};
     text-decoration: none;
-    border-bottom: 1px dashed rgba(0, 240, 255, 0.5);
+    border-bottom: 1px dashed {p["link_border"]};
   }}
   code {{
     font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
-    background-color: #111c33;
-    color: #38bdf8;
+    background-color: {p["code_bg"]};
+    color: {p["code_fg"]};
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 0.92em;
   }}
   pre.code-block {{
-    background-color: #070a14;
-    border: 1px solid rgba(0, 240, 255, 0.28);
-    border-left: 3px solid #00f0ff;
+    background-color: {p["pre_bg"]};
+    border: 1px solid {p["pre_border"]};
+    border-left: 3px solid {p["pre_accent"]};
     border-radius: 8px;
     padding: 14px 18px;
     overflow-x: auto;
   }}
   pre.code-block code {{
     background: transparent;
-    color: #f0f9ff;
+    color: {p["pre_fg"]};
     padding: 0;
   }}
   blockquote {{
     margin: 1em 0;
     padding: 10px 18px;
-    background-color: rgba(17, 28, 51, 0.7);
-    border-left: 4px solid #38bdf8;
-    color: #bae6fd;
+    background-color: {p["quote_bg"]};
+    border-left: 4px solid {p["quote_accent"]};
+    color: {p["quote_fg"]};
     border-radius: 0 6px 6px 0;
   }}
   table {{
     width: 100%;
     border-collapse: collapse;
     margin: 1.2em 0;
-    background-color: #0d1324;
-    border: 1px solid rgba(0, 240, 255, 0.25);
+    background-color: {p["table_bg"]};
+    border: 1px solid {p["table_border"]};
   }}
   th, td {{
-    border: 1px solid rgba(56, 189, 248, 0.22);
+    border: 1px solid {p["cell_border"]};
     padding: 8px 12px;
     text-align: left;
   }}
   th {{
-    background-color: #111c33;
-    color: #00f0ff;
+    background-color: {p["th_bg"]};
+    color: {p["th_fg"]};
     font-weight: 700;
   }}
   tr:nth-child(even) {{
-    background-color: #0b1020;
+    background-color: {p["tr_even"]};
   }}
   hr {{
     border: none;
-    border-top: 1px solid rgba(0, 240, 255, 0.3);
+    border-top: 1px solid {p["hr"]};
     margin: 2em 0;
   }}
   ul, ol {{
@@ -1071,45 +1170,53 @@ class PDFPageRenderer:
             return links
         return []
 
-    def render_page_surface(self, page_num: int, scale: float = 1.0) -> Optional[cairo.ImageSurface]:
+    def render_page_surface(self, page_num: int, scale: float = 1.0, dark_mode: bool = False) -> Optional[cairo.ImageSurface]:
         """Render page_num (1-based) directly to an in-memory cairo.ImageSurface (purely CPU-bound, thread safe)."""
         if not self.pdf_path or self.page_count == 0:
             return None
         page_num = max(1, min(page_num, self.page_count))
         if self._doc_handle and PopplerBridge.is_available():
-            return PopplerBridge.render_page(self._doc_handle, page_num - 1, scale=scale * 1.333)
+            return PopplerBridge.render_page(
+                self._doc_handle, page_num - 1, scale=scale * 1.333, dark_mode=dark_mode
+            )
         return None
 
-    def render_page_pixbuf(self, page_num: int, scale: float = 1.0) -> Optional[GdkPixbuf.Pixbuf]:
+    def _pixbuf_from_surface_or_fallback(self, surf: Optional[cairo.ImageSurface], page_num: int, scale: float, dark_mode: bool) -> Optional[GdkPixbuf.Pixbuf]:
+        pix = None
+        if surf is not None:
+            try:
+                pix = Gdk.pixbuf_get_from_surface(surf, 0, 0, surf.get_width(), surf.get_height())
+            except Exception:
+                pix = None
+
+        if pix is None:
+            dpi = int(round(120 * scale))
+            png_path = self.render_page_png(page_num, dpi=dpi)
+            if png_path and os.path.isfile(png_path):
+                try:
+                    if dark_mode:
+                        tmp_surf = cairo.ImageSurface.create_from_png(png_path)
+                        PopplerBridge.apply_dark_mode(tmp_surf)
+                        pix = Gdk.pixbuf_get_from_surface(tmp_surf, 0, 0, tmp_surf.get_width(), tmp_surf.get_height())
+                    else:
+                        pix = GdkPixbuf.Pixbuf.new_from_file(png_path)
+                except Exception:
+                    pass
+        return pix
+
+    def render_page_pixbuf(self, page_num: int, scale: float = 1.0, dark_mode: bool = False) -> Optional[GdkPixbuf.Pixbuf]:
         """Render page_num (1-based) to GdkPixbuf at scale factor without blocking disk operations."""
         if not self.pdf_path or self.page_count == 0:
             return None
         page_num = max(1, min(page_num, self.page_count))
         scale_key = round(scale, 2)
-        cache_key = (page_num, scale_key)
+        cache_key = (page_num, scale_key, bool(dark_mode))
         with self._render_lock:
             if cache_key in self._pixbuf_cache:
                 return self._pixbuf_cache[cache_key]
 
-        pix = None
-        surf = self.render_page_surface(page_num, scale)
-        if surf is not None:
-            w = surf.get_width()
-            h = surf.get_height()
-            try:
-                pix = Gdk.pixbuf_get_from_surface(surf, 0, 0, w, h)
-            except Exception:
-                pix = None
-
-        if pix is None:
-            # Fallback to pdftoppm
-            dpi = int(round(120 * scale))
-            png_path = self.render_page_png(page_num, dpi=dpi)
-            if png_path and os.path.isfile(png_path):
-                try:
-                    pix = GdkPixbuf.Pixbuf.new_from_file(png_path)
-                except Exception:
-                    pass
+        surf = self.render_page_surface(page_num, scale, dark_mode=dark_mode)
+        pix = self._pixbuf_from_surface_or_fallback(surf, page_num, scale, dark_mode)
 
         if pix is not None:
             with self._render_lock:
@@ -1119,11 +1226,17 @@ class PDFPageRenderer:
 
         return pix
 
-    def render_page_async(self, page_num: int, scale: float, callback: Callable[[int, float, Optional[GdkPixbuf.Pixbuf]], None]):
+    def render_page_async(
+        self,
+        page_num: int,
+        scale: float,
+        callback: Callable[[int, float, Optional[GdkPixbuf.Pixbuf]], None],
+        dark_mode: bool = False,
+    ):
         """Asynchronously render page in a background thread and safely create GdkPixbuf on the main GTK loop."""
         page_num = max(1, min(page_num, self.page_count)) if self.page_count > 0 else page_num
         scale_key = round(scale, 2)
-        cache_key = (page_num, scale_key)
+        cache_key = (page_num, scale_key, bool(dark_mode))
 
         with self._render_lock:
             if cache_key in self._pixbuf_cache:
@@ -1132,29 +1245,10 @@ class PDFPageRenderer:
                 return
 
         def worker():
-            # In background worker: render purely in memory to cairo surface
-            surf = self.render_page_surface(page_num, scale)
+            surf = self.render_page_surface(page_num, scale, dark_mode=dark_mode)
 
             def _on_main_thread():
-                pix = None
-                if surf is not None:
-                    w = surf.get_width()
-                    h = surf.get_height()
-                    try:
-                        pix = Gdk.pixbuf_get_from_surface(surf, 0, 0, w, h)
-                    except Exception:
-                        pix = None
-
-                if pix is None:
-                    # Fallback to pdftoppm on main thread
-                    dpi = int(round(120 * scale))
-                    png_path = self.render_page_png(page_num, dpi=dpi)
-                    if png_path and os.path.isfile(png_path):
-                        try:
-                            pix = GdkPixbuf.Pixbuf.new_from_file(png_path)
-                        except Exception:
-                            pass
-
+                pix = self._pixbuf_from_surface_or_fallback(surf, page_num, scale, dark_mode)
                 if pix is not None:
                     with self._render_lock:
                         if len(self._pixbuf_cache) > 16:

@@ -53,12 +53,13 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
             except Exception:
                 pass
 
-        # Dark mode preference & neon blue theme
-        settings = Gtk.Settings.get_default()
-        if settings:
-            settings.set_property("gtk-application-prefer-dark-theme", True)
+        # Dark / Light mode state & neon theme
+        self.dark_mode = True
+        self.pdf_dark_mode = False
+        self._theme_css_provider = None
+        self._updating_theme_toggle = False
         self.current_theme = "docupanel-neon"
-        self._apply_dark_neon_theme()
+        self._apply_theme(self.dark_mode)
 
         # UI Construction
         self._build_header_bar()
@@ -101,136 +102,239 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
             return viewer._on_key_press(widget, event)
         return False
 
+    _UI_THEME_PALETTES = {
+        True: {
+            "win_bg": "#0b0f19",
+            "win_fg": "#ffffff",
+            "hb_grad": "linear-gradient(to bottom, #111827, #0b0f19)",
+            "hb_border": "rgba(0, 240, 255, 0.35)",
+            "hb_shadow": "0 1px 6px rgba(0, 240, 255, 0.12)",
+            "title_shadow": "0 0 8px rgba(0, 240, 255, 0.45)",
+            "subtitle_fg": "#38bdf8",
+            "btn_bg": "#161f33",
+            "btn_fg": "#ffffff",
+            "btn_border": "rgba(56, 189, 248, 0.35)",
+            "btn_hover_bg": "#1e2d4a",
+            "btn_hover_fg": "#00f0ff",
+            "btn_hover_border": "#00f0ff",
+            "btn_checked_bg": "#0284c7",
+            "btn_checked_fg": "#ffffff",
+            "btn_checked_border": "#00f0ff",
+            "nb_bg": "#080b12",
+            "nb_border": "rgba(56, 189, 248, 0.25)",
+            "tab_bg": "#0f1626",
+            "tab_fg": "#bae6fd",
+            "tab_active_bg": "#17233b",
+            "tab_active_fg": "#ffffff",
+            "entry_bg": "#0d1322",
+            "entry_fg": "#ffffff",
+            "entry_border": "rgba(56, 189, 248, 0.45)",
+            "tree_bg": "#0a0e19",
+            "tree_fg": "#ffffff",
+            "tree_hdr_bg": "#111827",
+            "tree_hdr_fg": "#38bdf8",
+            "pop_bg": "#0f172a",
+            "pop_fg": "#ffffff",
+            "pop_border": "rgba(0, 240, 255, 0.4)",
+            "sel_bg": "#0284c7",
+            "sel_fg": "#ffffff",
+            "dim_fg": "#94a3b8",
+        },
+        False: {
+            "win_bg": "#f1f5f9",
+            "win_fg": "#0f172a",
+            "hb_grad": "linear-gradient(to bottom, #ffffff, #e2e8f0)",
+            "hb_border": "rgba(2, 132, 199, 0.35)",
+            "hb_shadow": "0 1px 4px rgba(15, 23, 42, 0.08)",
+            "title_shadow": "none",
+            "subtitle_fg": "#0284c7",
+            "btn_bg": "#ffffff",
+            "btn_fg": "#0f172a",
+            "btn_border": "#cbd5e1",
+            "btn_hover_bg": "#e0f2fe",
+            "btn_hover_fg": "#0369a1",
+            "btn_hover_border": "#0284c7",
+            "btn_checked_bg": "#0284c7",
+            "btn_checked_fg": "#ffffff",
+            "btn_checked_border": "#0369a1",
+            "nb_bg": "#e2e8f0",
+            "nb_border": "#cbd5e1",
+            "tab_bg": "#e2e8f0",
+            "tab_fg": "#334155",
+            "tab_active_bg": "#ffffff",
+            "tab_active_fg": "#0f172a",
+            "entry_bg": "#ffffff",
+            "entry_fg": "#0f172a",
+            "entry_border": "#94a3b8",
+            "tree_bg": "#ffffff",
+            "tree_fg": "#0f172a",
+            "tree_hdr_bg": "#f1f5f9",
+            "tree_hdr_fg": "#0369a1",
+            "pop_bg": "#ffffff",
+            "pop_fg": "#0f172a",
+            "pop_border": "#cbd5e1",
+            "sel_bg": "#0284c7",
+            "sel_fg": "#ffffff",
+            "dim_fg": "#475569",
+        },
+    }
+
     def _apply_dark_neon_theme(self):
-        """Apply sleek dark mode CSS with white text and neon blue accents across DocuPanel."""
+        """Backward-compatible wrapper that applies the active dark-neon theme."""
+        self._apply_theme(True)
+
+    def _apply_theme(self, dark_mode: bool):
+        """Apply unified Dark Neon or Crisp Light CSS across DocuPanel UI widgets."""
+        dark_mode = bool(dark_mode)
         styles_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "styles")
         if os.path.exists(styles_dir):
             GtkSource.StyleSchemeManager.get_default().prepend_search_path(styles_dir)
 
-        css = b"""
-        window, dialog, .background {
-            background-color: #0b0f19;
-            color: #ffffff;
-        }
+        settings = Gtk.Settings.get_default()
+        if settings:
+            settings.set_property("gtk-application-prefer-dark-theme", dark_mode)
 
-        headerbar {
-            background: linear-gradient(to bottom, #111827, #0b0f19);
-            border-bottom: 1px solid rgba(0, 240, 255, 0.35);
-            box-shadow: 0 1px 6px rgba(0, 240, 255, 0.12);
-            color: #ffffff;
+        self.dark_mode = dark_mode
+        self.current_theme = "docupanel-neon" if dark_mode else "docupanel-light"
+
+        p = self._UI_THEME_PALETTES[dark_mode]
+        css = f"""
+        window, dialog, .background, scrolledwindow, viewport {{
+            background-color: {p["win_bg"]};
+            color: {p["win_fg"]};
+        }}
+
+        headerbar {{
+            background: {p["hb_grad"]};
+            border-bottom: 1px solid {p["hb_border"]};
+            box-shadow: {p["hb_shadow"]};
+            color: {p["win_fg"]};
             padding: 4px 6px;
-        }
+        }}
 
-        headerbar .title {
-            color: #ffffff;
+        headerbar .title {{
+            color: {p["win_fg"]};
             font-weight: 700;
             letter-spacing: 0.4px;
-            text-shadow: 0 0 8px rgba(0, 240, 255, 0.45);
-        }
+            text-shadow: {p["title_shadow"]};
+        }}
 
-        headerbar .subtitle {
-            color: #38bdf8;
+        headerbar .subtitle {{
+            color: {p["subtitle_fg"]};
             font-size: 90%;
-        }
+        }}
 
-        headerbar button, button {
+        headerbar button, button {{
             background-image: none;
-            background-color: #161f33;
-            color: #ffffff;
-            border: 1px solid rgba(56, 189, 248, 0.35);
+            background-color: {p["btn_bg"]};
+            color: {p["btn_fg"]};
+            border: 1px solid {p["btn_border"]};
             border-radius: 5px;
-        }
+        }}
 
-        headerbar button:hover, button:hover {
-            background-color: #1e2d4a;
-            border-color: #00f0ff;
-            color: #00f0ff;
-            box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
-        }
+        headerbar button:hover, button:hover {{
+            background-color: {p["btn_hover_bg"]};
+            border-color: {p["btn_hover_border"]};
+            color: {p["btn_hover_fg"]};
+            box-shadow: 0 0 8px rgba(0, 240, 255, 0.25);
+        }}
 
         headerbar button:checked, headerbar button:active,
-        button:checked, button:active {
-            background-color: #0284c7;
-            border-color: #00f0ff;
-            color: #ffffff;
-        }
+        button:checked, button:active {{
+            background-color: {p["btn_checked_bg"]};
+            border-color: {p["btn_checked_border"]};
+            color: {p["btn_checked_fg"]};
+        }}
 
-        notebook, notebook header {
-            background-color: #080b12;
-            border-color: rgba(56, 189, 248, 0.25);
-        }
+        headerbar button:checked label, button:checked label {{
+            color: {p["btn_checked_fg"]};
+        }}
 
-        notebook tab {
-            background-color: #0f1626;
-            color: #bae6fd;
+        notebook, notebook header {{
+            background-color: {p["nb_bg"]};
+            border-color: {p["nb_border"]};
+        }}
+
+        notebook tab {{
+            background-color: {p["tab_bg"]};
+            color: {p["tab_fg"]};
             padding: 4px 10px;
             border: 1px solid transparent;
-        }
+        }}
 
-        notebook tab:checked {
-            background-color: #17233b;
-            color: #ffffff;
-            border-bottom: 2px solid #00f0ff;
-            box-shadow: 0 -1px 8px rgba(0, 240, 255, 0.2);
-        }
+        notebook tab:checked {{
+            background-color: {p["tab_active_bg"]};
+            color: {p["tab_active_fg"]};
+            border-bottom: 2px solid {p["btn_hover_border"]};
+            box-shadow: 0 -1px 8px rgba(0, 240, 255, 0.16);
+        }}
 
-        entry, searchentry {
-            background-color: #0d1322;
-            color: #ffffff;
-            border: 1px solid rgba(56, 189, 248, 0.45);
+        entry, searchentry {{
+            background-color: {p["entry_bg"]};
+            color: {p["entry_fg"]};
+            border: 1px solid {p["entry_border"]};
             border-radius: 4px;
-            caret-color: #00f0ff;
-        }
+            caret-color: {p["btn_hover_border"]};
+        }}
 
-        entry:focus, searchentry:focus {
-            border-color: #00f0ff;
-            box-shadow: 0 0 6px rgba(0, 240, 255, 0.35);
-        }
+        entry:focus, searchentry:focus {{
+            border-color: {p["btn_hover_border"]};
+            box-shadow: 0 0 6px rgba(0, 240, 255, 0.3);
+        }}
 
-        treeview.view {
-            background-color: #0a0e19;
-            color: #ffffff;
-        }
+        treeview.view {{
+            background-color: {p["tree_bg"]};
+            color: {p["tree_fg"]};
+        }}
 
-        treeview.view:selected {
-            background-color: #0284c7;
-            color: #ffffff;
-        }
+        treeview.view:selected {{
+            background-color: {p["sel_bg"]};
+            color: {p["sel_fg"]};
+        }}
 
-        treeview.view header button {
-            background-color: #111827;
-            color: #38bdf8;
+        treeview.view header button {{
+            background-color: {p["tree_hdr_bg"]};
+            color: {p["tree_hdr_fg"]};
             font-weight: bold;
-            border-bottom: 1px solid rgba(0, 240, 255, 0.3);
-        }
+            border-bottom: 1px solid {p["hb_border"]};
+        }}
 
-        popover, menu, .popup {
-            background-color: #0f172a;
-            color: #ffffff;
-            border: 1px solid rgba(0, 240, 255, 0.4);
-        }
+        popover, menu, .popup {{
+            background-color: {p["pop_bg"]};
+            color: {p["pop_fg"]};
+            border: 1px solid {p["pop_border"]};
+        }}
 
-        menuitem:hover, modelbutton:hover {
-            background-color: #0284c7;
-            color: #ffffff;
-        }
+        menuitem:hover, modelbutton:hover {{
+            background-color: {p["sel_bg"]};
+            color: {p["sel_fg"]};
+        }}
 
-        label {
-            color: #ffffff;
-        }
-        """
-        provider = Gtk.CssProvider()
-        try:
-            provider.load_from_data(css)
+        checkbutton, checkbutton label, label {{
+            color: {p["win_fg"]};
+        }}
+
+        .dim-label {{
+            color: {p["dim_fg"]};
+        }}
+        """.encode("utf-8")
+
+        if self._theme_css_provider is None:
+            self._theme_css_provider = Gtk.CssProvider()
             screen = Gdk.Screen.get_default()
             if screen:
                 Gtk.StyleContext.add_provider_for_screen(
                     screen,
-                    provider,
-                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                    self._theme_css_provider,
+                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
                 )
+        try:
+            self._theme_css_provider.load_from_data(css)
         except Exception:
             pass
+
+        if hasattr(self, "_toc_page_renderer") and self._toc_page_renderer is not None:
+            self._toc_page_renderer.set_property("foreground", "#00d4ff" if dark_mode else "#0284c7")
 
     # --------------------------------------------------------------------------
     # HeaderBar Construction
@@ -338,6 +442,19 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         btn_find.connect("clicked", lambda b: self.on_show_find())
         hb.pack_end(btn_find)
 
+        # Dark Mode Toggle
+        self.btn_dark_mode = Gtk.ToggleButton()
+        dark_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        self._dark_mode_icon = Gtk.Image.new_from_icon_name("weather-clear-night-symbolic", Gtk.IconSize.BUTTON)
+        self._dark_mode_lbl = Gtk.Label(label="Dark")
+        dark_box.pack_start(self._dark_mode_icon, False, False, 0)
+        dark_box.pack_start(self._dark_mode_lbl, False, False, 0)
+        self.btn_dark_mode.add(dark_box)
+        self.btn_dark_mode.set_active(getattr(self, "dark_mode", True))
+        self.btn_dark_mode.set_tooltip_text("Toggle Dark / Light Mode (Ctrl+Shift+D)")
+        self.btn_dark_mode.connect("toggled", self._on_dark_mode_toggled)
+        hb.pack_end(self.btn_dark_mode)
+
     def _build_menu_popover(self, parent_btn):
         popover = Gtk.Popover.new(parent_btn)
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -374,6 +491,16 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         self.chk_wrap.set_active(True)
         self.chk_wrap.connect("toggled", self._on_toggle_wrap)
         vbox.pack_start(self.chk_wrap, False, False, 0)
+
+        self.chk_dark_mode = Gtk.CheckButton(label="Dark Mode (Ctrl+Shift+D)")
+        self.chk_dark_mode.set_active(getattr(self, "dark_mode", True))
+        self.chk_dark_mode.connect("toggled", self._on_dark_mode_toggled)
+        vbox.pack_start(self.chk_dark_mode, False, False, 0)
+
+        self.chk_pdf_dark = Gtk.CheckButton(label="PDF Dark Reading Mode (Ctrl+I)")
+        self.chk_pdf_dark.set_active(getattr(self, "pdf_dark_mode", False))
+        self.chk_pdf_dark.connect("toggled", self._on_menu_pdf_dark_toggled)
+        vbox.pack_start(self.chk_pdf_dark, False, False, 0)
 
         btn_font = Gtk.Button(label="Select Font...")
         btn_font.connect("clicked", lambda b: (popover.popdown(), self.on_select_font()))
@@ -443,8 +570,9 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
 
         renderer_pg = Gtk.CellRendererText()
         renderer_pg.set_property("xalign", 1.0)
-        renderer_pg.set_property("foreground", "#00d4ff")
+        renderer_pg.set_property("foreground", "#00d4ff" if getattr(self, "dark_mode", True) else "#0284c7")
         renderer_pg.set_property("scale", 0.85)
+        self._toc_page_renderer = renderer_pg
         col_pg = Gtk.TreeViewColumn("Page", renderer_pg, text=3)
         col_pg.set_expand(False)
         self.toc_tree.append_column(col_pg)
@@ -500,7 +628,11 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
                     self.notebook_tabs.set_current_page(i)
                     return existing
 
-        viewer = DocViewer(file_path=file_path)
+        viewer = DocViewer(
+            file_path=file_path,
+            dark_mode=getattr(self, "dark_mode", True),
+            pdf_dark_mode=getattr(self, "pdf_dark_mode", False),
+        )
         viewer.connect("cursor-moved", self._on_cursor_moved)
         viewer.connect("content-modified", lambda v, mod: self._on_content_modified(v))
         viewer.connect("zoom-changed", self._on_zoom_changed)
@@ -508,6 +640,7 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         viewer.connect("outline-updated", lambda v: self.refresh_outline())
         viewer.connect("open-file-requested", lambda v, path: self.new_tab(path))
         viewer.connect("pdf-page-changed", self._on_pdf_page_changed)
+        viewer.connect("pdf-dark-mode-changed", self._on_viewer_pdf_dark_changed)
 
         tab_box = self._create_tab_label(viewer)
         idx = self.notebook_tabs.append_page(viewer, tab_box)
@@ -605,6 +738,8 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
             self.btn_mode_rendered.set_active(viewer.get_view_mode() in ("rendered", "pdf"))
             self.btn_read_only.set_active(viewer.read_only)
             self.btn_line_nums.set_active(viewer.get_line_numbers())
+            if hasattr(self, "chk_pdf_dark"):
+                self.chk_pdf_dark.set_active(bool(getattr(viewer, "pdf_dark_mode", False)))
         finally:
             self._updating_mode_toggle = False
 
@@ -793,6 +928,82 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         if viewer:
             viewer.set_word_wrap(btn.get_active())
 
+    def _on_dark_mode_toggled(self, btn):
+        if getattr(self, "_updating_theme_toggle", False):
+            return
+        self.set_dark_mode(btn.get_active())
+
+    def toggle_dark_mode(self):
+        self.set_dark_mode(not getattr(self, "dark_mode", True))
+
+    def set_dark_mode(self, enabled: bool):
+        """Switch DocuPanel UI chrome, source views, rich previews, and PDF reading mode."""
+        enabled = bool(enabled)
+        self._apply_theme(enabled)
+
+        self._updating_theme_toggle = True
+        try:
+            if hasattr(self, "btn_dark_mode"):
+                self.btn_dark_mode.set_active(enabled)
+            if hasattr(self, "chk_dark_mode"):
+                self.chk_dark_mode.set_active(enabled)
+            if hasattr(self, "_dark_mode_icon"):
+                self._dark_mode_icon.set_from_icon_name(
+                    "weather-clear-night-symbolic" if enabled else "weather-clear-symbolic",
+                    Gtk.IconSize.BUTTON,
+                )
+            if hasattr(self, "_dark_mode_lbl"):
+                self._dark_mode_lbl.set_text("Dark" if enabled else "Light")
+        finally:
+            self._updating_theme_toggle = False
+
+        if not enabled:
+            self.pdf_dark_mode = False
+            if hasattr(self, "chk_pdf_dark"):
+                self._updating_theme_toggle = True
+                try:
+                    self.chk_pdf_dark.set_active(False)
+                finally:
+                    self._updating_theme_toggle = False
+
+        for i in range(self.notebook_tabs.get_n_pages()):
+            v = self.notebook_tabs.get_nth_page(i)
+            if isinstance(v, DocViewer):
+                v.set_dark_mode(enabled)
+                if not enabled and v.pdf_dark_mode:
+                    v.set_pdf_dark_mode(False)
+
+    def _on_menu_pdf_dark_toggled(self, btn):
+        if getattr(self, "_updating_theme_toggle", False) or getattr(self, "_updating_mode_toggle", False):
+            return
+        self.set_pdf_dark_mode(btn.get_active())
+
+    def toggle_pdf_dark_mode(self):
+        viewer = self.get_current_viewer()
+        target = not bool(getattr(viewer, "pdf_dark_mode", self.pdf_dark_mode))
+        self.set_pdf_dark_mode(target)
+
+    def set_pdf_dark_mode(self, enabled: bool):
+        enabled = bool(enabled)
+        self.pdf_dark_mode = enabled
+        viewer = self.get_current_viewer()
+        if viewer:
+            viewer.set_pdf_dark_mode(enabled)
+        self._sync_pdf_dark_ui(enabled)
+
+    def _on_viewer_pdf_dark_changed(self, viewer, enabled: bool):
+        if viewer == self.get_current_viewer():
+            self.pdf_dark_mode = bool(enabled)
+            self._sync_pdf_dark_ui(enabled)
+
+    def _sync_pdf_dark_ui(self, enabled: bool):
+        if hasattr(self, "chk_pdf_dark") and self.chk_pdf_dark.get_active() != bool(enabled):
+            self._updating_theme_toggle = True
+            try:
+                self.chk_pdf_dark.set_active(bool(enabled))
+            finally:
+                self._updating_theme_toggle = False
+
     def zoom_active(self, out=False, reset=False):
         viewer = self.get_current_viewer()
         if not viewer:
@@ -930,7 +1141,10 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         if res == Gtk.ResponseType.OK and out_path:
             try:
                 html_doc = DocumentParser.render_markdown_to_html(
-                    viewer.get_text(), viewer.doc_type, viewer.file_path
+                    viewer.get_text(),
+                    viewer.doc_type,
+                    viewer.file_path,
+                    dark_mode=getattr(self, "dark_mode", True),
                 )
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write(html_doc)
@@ -1050,6 +1264,8 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
             ("g", Gdk.ModifierType.CONTROL_MASK, lambda: self.on_goto_line()),
             ("p", Gdk.ModifierType.CONTROL_MASK, lambda: self._trigger_toggle_mode()),
             ("r", Gdk.ModifierType.CONTROL_MASK, lambda: self.btn_read_only.set_active(not self.btn_read_only.get_active())),
+            ("d", Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK, lambda: self.toggle_dark_mode()),
+            ("i", Gdk.ModifierType.CONTROL_MASK, lambda: self.toggle_pdf_dark_mode()),
             ("F6", 0, lambda: self._trigger_toggle_mode()),
             ("F9", 0, lambda: self.btn_toggle_toc.set_active(not self.btn_toggle_toc.get_active())),
             ("F5", 0, lambda: self.zoom_fit_page()),

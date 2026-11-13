@@ -56,6 +56,7 @@ class DocViewer(Gtk.Box):
         'outline-updated': (GObject.SignalFlags.RUN_FIRST, None, ()),
         'open-file-requested': (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         'pdf-page-changed': (GObject.SignalFlags.RUN_FIRST, None, (int,)),
+        'pdf-dark-mode-changed': (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
     }
 
     ZOOM_STEPS = [
@@ -65,12 +66,13 @@ class DocViewer(Gtk.Box):
     ]
     DEFAULT_ZOOM_INDEX = 5  # 100%
     _shared_css_provider = None
+    _shared_light_css_provider = None
     _watermark_pixbuf = None
     _watermark_loaded = False
     _URL_REGEX = re.compile(r'https?://[^\s)\]>"\'`]+|mailto:[^\s)\]>"\'`]+|file://[^\s)\]>"\'`]+')
     _MD_LINK_REGEX = re.compile(r'\[([^\]]+)\]\((https?://[^\s)\]>"\'`]+|[^)\s]+)\)')
 
-    def __init__(self, file_path=None):
+    def __init__(self, file_path=None, dark_mode=True, pdf_dark_mode=False):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
         self.file_path = None
@@ -79,6 +81,10 @@ class DocViewer(Gtk.Box):
         self.doc_type = "markdown"
         self._is_modified = False
         self.read_only = False
+        self.dark_mode = bool(dark_mode)
+        self.pdf_dark_mode = bool(pdf_dark_mode)
+        self._active_view_css_provider = None
+        self._updating_pdf_dark_btn = False
 
         # Cached statistics
         self._stats_dirty = True
@@ -136,8 +142,7 @@ class DocViewer(Gtk.Box):
         self.scrolled_rendered = None
         if HAS_WEBKIT:
             self.web_view = WebKit2.WebView()
-            rgba = Gdk.RGBA(0.039, 0.055, 0.102, 1.0)
-            self.web_view.set_background_color(rgba)
+            self._sync_webview_background()
             self.view_stack.add_named(self.web_view, "rendered")
         else:
             self.web_view = None
@@ -162,7 +167,7 @@ class DocViewer(Gtk.Box):
         self._setup_signals()
 
         self.apply_retina_font()
-        self.set_theme("docupanel-neon")
+        self.set_theme("docupanel-neon" if self.dark_mode else "docupanel-light")
 
         self.show_all()
         self.view_stack.set_visible_child_name("source")
@@ -203,6 +208,19 @@ class DocViewer(Gtk.Box):
 
         self.lbl_pdf_page = Gtk.Label(label="Page 1 / 1")
         nav_bar.pack_start(self.lbl_pdf_page, False, False, 6)
+
+        self.btn_pdf_dark = Gtk.ToggleButton()
+        pdf_dark_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        pdf_dark_box.pack_start(
+            Gtk.Image.new_from_icon_name("weather-clear-night-symbolic", Gtk.IconSize.BUTTON),
+            False, False, 0
+        )
+        pdf_dark_box.pack_start(Gtk.Label(label="Dark PDF"), False, False, 0)
+        self.btn_pdf_dark.add(pdf_dark_box)
+        self.btn_pdf_dark.set_active(self.pdf_dark_mode)
+        self.btn_pdf_dark.set_tooltip_text("Toggle PDF Dark Reading Mode (Invert & Tint Pages, Ctrl+I)")
+        self.btn_pdf_dark.connect("toggled", self._on_pdf_dark_toggled)
+        nav_bar.pack_end(self.btn_pdf_dark, False, False, 0)
 
         pdf_box.pack_start(nav_bar, False, False, 0)
 
@@ -280,37 +298,73 @@ class DocViewer(Gtk.Box):
         view.set_top_margin(12)
         view.set_bottom_margin(12)
 
-    def _setup_retina_styles(self):
-        if DocViewer._shared_css_provider is None:
+    @classmethod
+    def _get_view_css_provider(cls, dark_mode: bool) -> Optional[Gtk.CssProvider]:
+        attr = "_shared_css_provider" if dark_mode else "_shared_light_css_provider"
+        provider = getattr(cls, attr, None)
+        if provider is None:
             provider = Gtk.CssProvider()
-            css = b"""
-            textview {
-                font-feature-settings: "liga 1, calt 1";
-                background-color: #0a0e1a;
-                color: #ffffff;
-            }
-            textview text {
-                background-color: #0a0e1a;
-                color: #ffffff;
-            }
-            textview border {
-                background-color: #070a14;
-                border-right: 1px solid rgba(0, 240, 255, 0.25);
-                padding-right: 8px;
-                padding-left: 6px;
-            }
-            """
+            if dark_mode:
+                css = b"""
+                textview {
+                    font-feature-settings: "liga 1, calt 1";
+                    background-color: #0a0e1a;
+                    color: #ffffff;
+                }
+                textview text {
+                    background-color: #0a0e1a;
+                    color: #ffffff;
+                }
+                textview border {
+                    background-color: #070a14;
+                    border-right: 1px solid rgba(0, 240, 255, 0.25);
+                    padding-right: 8px;
+                    padding-left: 6px;
+                }
+                """
+            else:
+                css = b"""
+                textview {
+                    font-feature-settings: "liga 1, calt 1";
+                    background-color: #ffffff;
+                    color: #0f172a;
+                }
+                textview text {
+                    background-color: #ffffff;
+                    color: #0f172a;
+                }
+                textview border {
+                    background-color: #f1f5f9;
+                    border-right: 1px solid rgba(2, 132, 199, 0.22);
+                    padding-right: 8px;
+                    padding-left: 6px;
+                }
+                """
             try:
                 provider.load_from_data(css)
-                DocViewer._shared_css_provider = provider
+                setattr(cls, attr, provider)
             except Exception:
-                return
+                return None
+        return provider
 
+    def _setup_retina_styles(self):
+        provider = self._get_view_css_provider(self.dark_mode)
+        if provider is None:
+            return
         context = self.source_view.get_style_context()
-        context.add_provider(
-            DocViewer._shared_css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+        if self._active_view_css_provider is not None and self._active_view_css_provider != provider:
+            context.remove_provider(self._active_view_css_provider)
+        if self._active_view_css_provider != provider:
+            context.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            self._active_view_css_provider = provider
+
+    def _sync_webview_background(self):
+        if HAS_WEBKIT and getattr(self, "web_view", None) is not None:
+            if self.dark_mode:
+                rgba = Gdk.RGBA(0.039, 0.055, 0.102, 1.0)
+            else:
+                rgba = Gdk.RGBA(1.0, 1.0, 1.0, 1.0)
+            self.web_view.set_background_color(rgba)
 
     def _setup_signals(self):
         self.source_buffer.connect("changed", self._on_buffer_changed)
@@ -1405,7 +1459,9 @@ class DocViewer(Gtk.Box):
 
     def refresh_rendered_preview(self):
         text = self.get_text()
-        html_doc = DocumentParser.render_markdown_to_html(text, self.doc_type, self.file_path)
+        html_doc = DocumentParser.render_markdown_to_html(
+            text, self.doc_type, self.file_path, dark_mode=self.dark_mode
+        )
         if HAS_WEBKIT and self.web_view is not None:
             base_uri = "file://" + os.path.dirname(os.path.abspath(self.file_path)) + "/" if self.file_path else "file:///"
             self.web_view.load_html(html_doc, base_uri)
@@ -1482,6 +1538,7 @@ class DocViewer(Gtk.Box):
             self.pdf_event_box.queue_draw()
 
         if sync:
+            self._pdf_render_gen = getattr(self, "_pdf_render_gen", 0) + 1
             timer = getattr(self, "_pdf_debounce_timer", None)
             if timer:
                 try:
@@ -1490,7 +1547,9 @@ class DocViewer(Gtk.Box):
                     pass
                 self._pdf_debounce_timer = None
 
-            pix = self.pdf_renderer.render_page_pixbuf(self.current_pdf_page, scale)
+            pix = self.pdf_renderer.render_page_pixbuf(
+                self.current_pdf_page, scale, dark_mode=self.pdf_dark_mode
+            )
             if pix is not None:
                 self._current_pdf_pixbuf = pix
                 self._current_page_base_w = max(10.0, pix.get_width() / scale)
@@ -1534,7 +1593,8 @@ class DocViewer(Gtk.Box):
             self.pdf_renderer.render_page_async(
                 page,
                 scale,
-                lambda p_num, sc, pix: self._on_pdf_rendered(gen, p_num, sc, pix)
+                lambda p_num, sc, pix: self._on_pdf_rendered(gen, p_num, sc, pix),
+                dark_mode=self.pdf_dark_mode,
             )
             return False
 
@@ -1719,12 +1779,51 @@ class DocViewer(Gtk.Box):
         manager = GtkSource.StyleSchemeManager.get_default()
         scheme = manager.get_scheme(scheme_id)
         if scheme is None:
-            for fallback in ("docupanel-neon", "oblivion", "solarized-dark", "classic"):
+            fallbacks = (
+                ("docupanel-light", "classic", "tango", "docupanel-neon")
+                if "light" in (scheme_id or "").lower()
+                else ("docupanel-neon", "oblivion", "solarized-dark", "classic")
+            )
+            for fallback in fallbacks:
                 scheme = manager.get_scheme(fallback)
                 if scheme:
                     break
         if scheme:
             self.source_buffer.set_style_scheme(scheme)
+
+    def set_dark_mode(self, enabled: bool):
+        """Switch viewer UI, syntax highlighting, and rich preview between Dark Mode and Light Mode."""
+        enabled = bool(enabled)
+        if self.dark_mode == enabled:
+            return
+        self.dark_mode = enabled
+        self._setup_retina_styles()
+        self.set_theme("docupanel-neon" if self.dark_mode else "docupanel-light")
+        self._sync_webview_background()
+        if self.doc_type != "pdf":
+            self.refresh_rendered_preview()
+
+    def _on_pdf_dark_toggled(self, btn):
+        if getattr(self, "_updating_pdf_dark_btn", False):
+            return
+        self.set_pdf_dark_mode(btn.get_active())
+
+    def set_pdf_dark_mode(self, enabled: bool):
+        """Toggle PDF night reading mode (C-level Cairo page darkening/inversion)."""
+        enabled = bool(enabled)
+        changed = (self.pdf_dark_mode != enabled)
+        self.pdf_dark_mode = enabled
+        if hasattr(self, "btn_pdf_dark") and self.btn_pdf_dark.get_active() != enabled:
+            self._updating_pdf_dark_btn = True
+            try:
+                self.btn_pdf_dark.set_active(enabled)
+            finally:
+                self._updating_pdf_dark_btn = False
+        if changed and self.doc_type == "pdf" and self.pdf_renderer and self.pdf_renderer.page_count > 0:
+            self._current_pdf_pixbuf = None
+            self._refresh_pdf_page(sync=True)
+        if changed:
+            self.emit("pdf-dark-mode-changed", self.pdf_dark_mode)
 
     def set_syntax_from_filename(self, filename: str):
         lang_manager = GtkSource.LanguageManager.get_default()
