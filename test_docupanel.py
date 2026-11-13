@@ -1210,6 +1210,12 @@ class TestDarkModeToggle(unittest.TestCase):
         self.assertIn("color-scheme: light;", light_html)
         self.assertIn("background-color: #ffffff;", light_html)
 
+        raw_html = "<html><head><style>body{background:#fff;color:#000;}</style></head><body>Hi</body></html>"
+        dark_raw = DocumentParser.render_markdown_to_html(raw_html, doc_type="html", dark_mode=True)
+        light_raw = DocumentParser.render_markdown_to_html(raw_html, doc_type="html", dark_mode=False)
+        self.assertIn("docupanel-night-invert", dark_raw)
+        self.assertNotIn("docupanel-night-invert", light_raw)
+
     def test_pdf_renderer_dark_mode_surface_and_cache(self):
         from doc_tools import PDFPageRenderer
 
@@ -1300,25 +1306,32 @@ class TestDarkModeToggle(unittest.TestCase):
                 self.assertEqual(win.current_theme, "docupanel-neon")
                 self.assertEqual(md_viewer.source_buffer.get_style_scheme().get_id(), "docupanel-neon")
 
-                # Switch to PDF tab and toggle PDF Dark Reading Mode
+                # Switch to PDF tab: Dark Mode defaults ON so white PDF opens inverted cleanly
                 win.notebook_tabs.set_current_page(1)
                 pdf_viewer = win.get_current_viewer()
-                self.assertFalse(pdf_viewer.pdf_dark_mode)
-                light_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
-                self.assertGreater(light_px[0], 240)
-
-                pdf_viewer.btn_pdf_dark.set_active(True)
                 self.assertTrue(pdf_viewer.pdf_dark_mode)
-                self.assertTrue(win.chk_pdf_dark.get_active())
                 dark_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
                 self.assertEqual((dark_px[0], dark_px[1], dark_px[2]), (11, 15, 25))
 
-                # Turning global Dark Mode OFF also restores Light PDF mode cleanly
+                # Turning global Dark Mode OFF restores bright white PDF paper cleanly
                 win.set_dark_mode(False)
                 self.assertFalse(pdf_viewer.pdf_dark_mode)
                 self.assertFalse(win.chk_pdf_dark.get_active())
                 restored_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
                 self.assertGreater(restored_px[0], 240)
+
+                # Turning global Dark Mode back ON re-inverts the white PDF back to dark navy
+                win.set_dark_mode(True)
+                self.assertTrue(pdf_viewer.pdf_dark_mode)
+                self.assertTrue(win.chk_pdf_dark.get_active())
+                dark_again_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
+                self.assertEqual((dark_again_px[0], dark_again_px[1], dark_again_px[2]), (11, 15, 25))
+
+                # Per-tab Dark PDF button still allows viewing authentic white paper when desired
+                pdf_viewer.btn_pdf_dark.set_active(False)
+                self.assertFalse(pdf_viewer.pdf_dark_mode)
+                light_override_px = pdf_viewer.pdf_image.get_pixbuf().get_pixels()
+                self.assertGreater(light_override_px[0], 240)
             finally:
                 for i in range(win.notebook_tabs.get_n_pages()):
                     v = win.notebook_tabs.get_nth_page(i)

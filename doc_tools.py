@@ -263,6 +263,11 @@ class PopplerBridge:
         cr.set_operator(cairo.Operator.LIGHTEN)
         cr.set_source_rgb(11.0 / 255.0, 15.0 / 255.0, 25.0 / 255.0)
         cr.paint()
+
+        # Soften harsh pure-white ink slightly to crisp night-readable off-white #f2f5fa
+        cr.set_operator(cairo.Operator.DARKEN)
+        cr.set_source_rgb(242.0 / 255.0, 245.0 / 255.0, 250.0 / 255.0)
+        cr.paint()
         surf.flush()
         return surf
 
@@ -842,7 +847,18 @@ class DocumentParser:
     ) -> str:
         """Convert Markdown, RST, CSV, JSON, or plain text into styled dark or light HTML for rich reading."""
         if doc_type == "html":
-            return text
+            if not dark_mode:
+                return text
+            night_css = (
+                "<style id=\"docupanel-night-invert\">"
+                "html { color-scheme: dark !important; background-color: #f4f5f7 !important; "
+                "filter: invert(0.93) hue-rotate(180deg) !important; } "
+                "img, video, picture, svg { filter: invert(1) hue-rotate(180deg) !important; }"
+                "</style>"
+            )
+            if "</head>" in text.lower():
+                return re.sub(r"</head>", f"{night_css}</head>", text, count=1, flags=re.IGNORECASE)
+            return f"{night_css}{text}"
 
         if doc_type == "csv":
             body_html = cls._csv_to_html_table(text, file_path)

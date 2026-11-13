@@ -55,7 +55,7 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
 
         # Dark / Light mode state & neon theme
         self.dark_mode = True
-        self.pdf_dark_mode = False
+        self.pdf_dark_mode = True
         self._theme_css_provider = None
         self._updating_theme_toggle = False
         self.current_theme = "docupanel-neon"
@@ -498,7 +498,7 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         vbox.pack_start(self.chk_dark_mode, False, False, 0)
 
         self.chk_pdf_dark = Gtk.CheckButton(label="PDF Dark Reading Mode (Ctrl+I)")
-        self.chk_pdf_dark.set_active(getattr(self, "pdf_dark_mode", False))
+        self.chk_pdf_dark.set_active(getattr(self, "pdf_dark_mode", True))
         self.chk_pdf_dark.connect("toggled", self._on_menu_pdf_dark_toggled)
         vbox.pack_start(self.chk_pdf_dark, False, False, 0)
 
@@ -631,7 +631,7 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         viewer = DocViewer(
             file_path=file_path,
             dark_mode=getattr(self, "dark_mode", True),
-            pdf_dark_mode=getattr(self, "pdf_dark_mode", False),
+            pdf_dark_mode=getattr(self, "pdf_dark_mode", True),
         )
         viewer.connect("cursor-moved", self._on_cursor_moved)
         viewer.connect("content-modified", lambda v, mod: self._on_content_modified(v))
@@ -941,12 +941,15 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         enabled = bool(enabled)
         self._apply_theme(enabled)
 
+        self.pdf_dark_mode = enabled
         self._updating_theme_toggle = True
         try:
             if hasattr(self, "btn_dark_mode"):
                 self.btn_dark_mode.set_active(enabled)
             if hasattr(self, "chk_dark_mode"):
                 self.chk_dark_mode.set_active(enabled)
+            if hasattr(self, "chk_pdf_dark"):
+                self.chk_pdf_dark.set_active(enabled)
             if hasattr(self, "_dark_mode_icon"):
                 self._dark_mode_icon.set_from_icon_name(
                     "weather-clear-night-symbolic" if enabled else "weather-clear-symbolic",
@@ -957,21 +960,11 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         finally:
             self._updating_theme_toggle = False
 
-        if not enabled:
-            self.pdf_dark_mode = False
-            if hasattr(self, "chk_pdf_dark"):
-                self._updating_theme_toggle = True
-                try:
-                    self.chk_pdf_dark.set_active(False)
-                finally:
-                    self._updating_theme_toggle = False
-
         for i in range(self.notebook_tabs.get_n_pages()):
             v = self.notebook_tabs.get_nth_page(i)
             if isinstance(v, DocViewer):
                 v.set_dark_mode(enabled)
-                if not enabled and v.pdf_dark_mode:
-                    v.set_pdf_dark_mode(False)
+                v.set_pdf_dark_mode(enabled)
 
     def _on_menu_pdf_dark_toggled(self, btn):
         if getattr(self, "_updating_theme_toggle", False) or getattr(self, "_updating_mode_toggle", False):

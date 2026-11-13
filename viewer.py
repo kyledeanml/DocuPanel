@@ -72,7 +72,7 @@ class DocViewer(Gtk.Box):
     _URL_REGEX = re.compile(r'https?://[^\s)\]>"\'`]+|mailto:[^\s)\]>"\'`]+|file://[^\s)\]>"\'`]+')
     _MD_LINK_REGEX = re.compile(r'\[([^\]]+)\]\((https?://[^\s)\]>"\'`]+|[^)\s]+)\)')
 
-    def __init__(self, file_path=None, dark_mode=True, pdf_dark_mode=False):
+    def __init__(self, file_path=None, dark_mode=True, pdf_dark_mode=True):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
         self.file_path = None
