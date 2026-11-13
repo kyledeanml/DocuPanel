@@ -1286,7 +1286,7 @@ class TestDarkModeToggle(unittest.TestCase):
                 self.assertTrue(win.chk_dark_mode.get_active())
                 self.assertEqual(win.current_theme, "docupanel-neon")
 
-                # Switch to Markdown tab and toggle Dark Mode OFF via headerbar button
+                # Switch to Markdown tab and toggle Dark Mode OFF (documents light, UI shell stays dark)
                 win.notebook_tabs.set_current_page(0)
                 md_viewer = win.get_current_viewer()
                 self.assertEqual(md_viewer.source_buffer.get_style_scheme().get_id(), "docupanel-neon")
@@ -1294,8 +1294,9 @@ class TestDarkModeToggle(unittest.TestCase):
                 win.btn_dark_mode.set_active(False)
                 self.assertFalse(win.dark_mode)
                 self.assertFalse(win.chk_dark_mode.get_active())
-                self.assertEqual(win.current_theme, "docupanel-light")
-                self.assertEqual(win._dark_mode_lbl.get_text(), "Light")
+                self.assertEqual(win.current_theme, "docupanel-neon")
+                self.assertTrue(Gtk.Settings.get_default().get_property("gtk-application-prefer-dark-theme"))
+                self.assertEqual(win._dark_mode_lbl.get_text(), "Dark")
                 self.assertEqual(md_viewer.source_buffer.get_style_scheme().get_id(), "docupanel-light")
 
                 # Toggle Dark Mode back ON

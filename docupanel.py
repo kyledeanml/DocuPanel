@@ -451,7 +451,7 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         dark_box.pack_start(self._dark_mode_lbl, False, False, 0)
         self.btn_dark_mode.add(dark_box)
         self.btn_dark_mode.set_active(getattr(self, "dark_mode", True))
-        self.btn_dark_mode.set_tooltip_text("Toggle Dark / Light Mode (Ctrl+Shift+D)")
+        self.btn_dark_mode.set_tooltip_text("Toggle Document Dark Mode (Invert/Darken Documents, Ctrl+Shift+D)")
         self.btn_dark_mode.connect("toggled", self._on_dark_mode_toggled)
         hb.pack_end(self.btn_dark_mode)
 
@@ -937,11 +937,11 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         self.set_dark_mode(not getattr(self, "dark_mode", True))
 
     def set_dark_mode(self, enabled: bool):
-        """Switch DocuPanel UI chrome, source views, rich previews, and PDF reading mode."""
+        """Toggle Dark Mode for documents (PDF/HTML/Markdown/Source) while keeping the dark neon UI shell."""
         enabled = bool(enabled)
-        self._apply_theme(enabled)
-
+        self.dark_mode = enabled
         self.pdf_dark_mode = enabled
+
         self._updating_theme_toggle = True
         try:
             if hasattr(self, "btn_dark_mode"):
@@ -955,8 +955,6 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
                     "weather-clear-night-symbolic" if enabled else "weather-clear-symbolic",
                     Gtk.IconSize.BUTTON,
                 )
-            if hasattr(self, "_dark_mode_lbl"):
-                self._dark_mode_lbl.set_text("Dark" if enabled else "Light")
         finally:
             self._updating_theme_toggle = False
 
