@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -488,6 +489,8 @@ class DocumentParser:
     ODT_EXTENSIONS = {".odt"}
     DOCX_EXTENSIONS = {".docx"}
     XML_EXTENSIONS = {".xml", ".svg", ".plist"}
+    MAX_DOCUMENT_BYTES = 50 * 1024 * 1024  # 50 MB text buffer cap
+    MAX_ZIP_XML_BYTES = 25 * 1024 * 1024   # 25 MB ODT/DOCX XML decompression bomb cap
 
     @classmethod
     def get_doc_type(cls, file_path: Optional[str]) -> str:
@@ -515,11 +518,25 @@ class DocumentParser:
         return "text"
 
     @classmethod
+    def _verify_regular_file(cls, file_path: str, max_bytes: Optional[int] = None) -> os.stat_result:
+        if not file_path or not isinstance(file_path, str) or "\x00" in file_path:
+            raise ValueError("Invalid file path.")
+        st = os.stat(file_path)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"Refusing to open non-regular file: {file_path}")
+        if max_bytes is not None and st.st_size > max_bytes:
+            raise ValueError(
+                f"File size ({st.st_size} bytes) exceeds maximum limit ({max_bytes} bytes)."
+            )
+        return st
+
+    @classmethod
     def load_document_text(cls, file_path: str) -> Tuple[str, str, str]:
         """
         Loads a file into readable text.
         Returns (text_content, encoding_label, doc_type).
         """
+        cls._verify_regular_file(file_path)
         doc_type = cls.get_doc_type(file_path)
 
         if doc_type == "pdf":
@@ -534,9 +551,12 @@ class DocumentParser:
             text = cls.extract_docx_text(file_path)
             return text, "DOCX (XML)", "docx"
 
+        cls._verify_regular_file(file_path, max_bytes=cls.MAX_DOCUMENT_BYTES)
         raw_bytes = b""
         with open(file_path, "rb") as f:
-            raw_bytes = f.read()
+            raw_bytes = f.read(cls.MAX_DOCUMENT_BYTES + 1)
+        if len(raw_bytes) > cls.MAX_DOCUMENT_BYTES:
+            raise ValueError("File exceeds maximum document memory limit.")
 
         had_nulls = b"\x00" in raw_bytes
         encoding = "UTF-8"
@@ -560,7 +580,7 @@ class DocumentParser:
 
         text = text.replace("\r\n", "\n")
 
-        if doc_type == "json" and file_path.lower().endswith(".json"):
+        if doc_type == "json" and file_path.lower().endswith(".json") and len(text) <= 5 * 1024 * 1024:
             try:
                 parsed = json.loads(text)
                 text = json.dumps(parsed, indent=2, ensure_ascii=False)
@@ -602,11 +622,23 @@ class DocumentParser:
     @classmethod
     def _read_zip_member(cls, file_path: str, member_name: str) -> Optional[bytes]:
         """Read a file entry from a zip/odt/docx archive using zipfile with unzip/7z CLI fallbacks."""
-        # 1. Try python's built-in zipfile
+        cls._verify_regular_file(file_path)
+        abs_file = os.path.abspath(file_path)
+
+        # 1. Try python's built-in zipfile with zip-bomb cap
         try:
-            with zipfile.ZipFile(file_path, "r") as zf:
+            with zipfile.ZipFile(abs_file, "r") as zf:
                 if member_name in zf.namelist():
-                    return zf.read(member_name)
+                    info = zf.getinfo(member_name)
+                    if info.file_size > cls.MAX_ZIP_XML_BYTES:
+                        raise ValueError("Archive member exceeds maximum safe uncompressed size.")
+                    with zf.open(member_name, "r") as fp:
+                        data = fp.read(cls.MAX_ZIP_XML_BYTES + 1)
+                    if len(data) > cls.MAX_ZIP_XML_BYTES:
+                        raise ValueError("Archive member stream exceeds maximum safe uncompressed size.")
+                    return data
+        except ValueError:
+            raise
         except Exception:
             pass
 
@@ -614,13 +646,18 @@ class DocumentParser:
         if shutil.which("unzip"):
             try:
                 proc = subprocess.run(
-                    ["unzip", "-p", "--", file_path, member_name],
+                    ["unzip", "-p", "--", abs_file, member_name],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    timeout=10,
                     check=False
                 )
                 if proc.returncode == 0 and proc.stdout:
+                    if len(proc.stdout) > cls.MAX_ZIP_XML_BYTES:
+                        raise ValueError("Archive member exceeds maximum safe uncompressed size.")
                     return proc.stdout
+            except ValueError:
+                raise
             except Exception:
                 pass
 
@@ -628,17 +665,28 @@ class DocumentParser:
         if shutil.which("7z"):
             try:
                 proc = subprocess.run(
-                    ["7z", "e", "-so", "--", file_path, member_name],
+                    ["7z", "e", "-so", "--", abs_file, member_name],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    timeout=10,
                     check=False
                 )
                 if proc.returncode == 0 and proc.stdout:
+                    if len(proc.stdout) > cls.MAX_ZIP_XML_BYTES:
+                        raise ValueError("Archive member exceeds maximum safe uncompressed size.")
                     return proc.stdout
+            except ValueError:
+                raise
             except Exception:
                 pass
 
         return None
+
+    @staticmethod
+    def _parse_safe_xml(xml_bytes: bytes) -> ET.Element:
+        if b"<!ENTITY" in xml_bytes.upper():
+            raise ValueError("XML entity declarations (<!ENTITY) are not permitted.")
+        return ET.fromstring(xml_bytes)
 
     @classmethod
     def extract_odt_text(cls, file_path: str) -> str:
@@ -647,7 +695,7 @@ class DocumentParser:
             xml_bytes = cls._read_zip_member(file_path, "content.xml")
             if not xml_bytes:
                 return f"[Invalid or unreadable ODT file: {os.path.basename(file_path)}]"
-            root = ET.fromstring(xml_bytes)
+            root = cls._parse_safe_xml(xml_bytes)
             paragraphs = []
             for elem in root.iter():
                 tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
@@ -669,7 +717,7 @@ class DocumentParser:
             xml_bytes = cls._read_zip_member(file_path, "word/document.xml")
             if not xml_bytes:
                 return f"[Invalid or unreadable DOCX file: {os.path.basename(file_path)}]"
-            root = ET.fromstring(xml_bytes)
+            root = cls._parse_safe_xml(xml_bytes)
             paragraphs = []
             for elem in root.iter():
                 tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
@@ -999,6 +1047,17 @@ class DocumentParser:
         out.append("</tbody></table>")
         return "\n".join(out)
 
+    @staticmethod
+    def _sanitize_markdown_url(escaped_url: str) -> str:
+        raw = html.unescape(escaped_url or "").strip()
+        compact = re.sub(r"[\s\x00-\x1f]+", "", raw).lower()
+        if ":" in compact:
+            scheme = compact.split(":", 1)[0]
+            if scheme not in ("http", "https", "mailto", "file"):
+                return "#"
+        safe = raw.replace('"', "%22").replace("'", "%27").replace("<", "%3C").replace(">", "%3E")
+        return html.escape(safe, quote=True)
+
     @classmethod
     def _markdown_to_html_body(cls, text: str) -> str:
         lines = text.splitlines()
@@ -1025,7 +1084,11 @@ class DocumentParser:
             escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
             escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
             escaped = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", escaped)
-            escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', escaped)
+            escaped = re.sub(
+                r"\[([^\]]+)\]\(([^)]+)\)",
+                lambda m: f'<a href="{cls._sanitize_markdown_url(m.group(2))}">{m.group(1)}</a>',
+                escaped,
+            )
             return escaped
 
         for line in lines:

@@ -1349,5 +1349,164 @@ class TestDarkModeToggle(unittest.TestCase):
                 pass
 
 
+class TestSecurityAndIntegrityHardening(unittest.TestCase):
+    """Penetration, attack-vector, and error-resilience tests for DocuPanel."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="docupanel_sec_test_")
+
+    def tearDown(self):
+        if os.path.exists(self.tmp_dir):
+            import shutil
+            shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_markdown_link_xss_and_unsafe_scheme_sanitization(self):
+        md = (
+            "[xss1](javascript:alert(1))\n\n"
+            "[xss2](java\tscript:evil())\n\n"
+            "[xss3](data:text/html,<script>alert(1)</script>)\n\n"
+            "[xss4](vbscript:msgbox(1))\n\n"
+            '[attr](https://example.com" onclick="alert(1))\n\n'
+            "[safe](https://example.com/docs)\n"
+        )
+        rendered = DocumentParser.render_markdown_to_html(md, doc_type="markdown")
+        self.assertNotIn("javascript:", rendered.lower())
+        self.assertNotIn("vbscript:", rendered.lower())
+        self.assertNotIn("data:text/html", rendered.lower())
+        self.assertNotIn('onclick="alert(1)"', rendered)
+        self.assertIn('<a href="https://example.com/docs">safe</a>', rendered)
+
+    def test_open_hyperlink_blocks_dangerous_schemes_and_non_regular_files(self):
+        from unittest.mock import patch
+        from gi.repository import Gio
+
+        viewer = DocViewer()
+        opened_files = []
+        viewer.connect("open-file-requested", lambda v, p: opened_files.append(p))
+
+        fifo_path = os.path.join(self.tmp_dir, "trap.fifo")
+        os.mkfifo(fifo_path)
+
+        dangerous_links = [
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:evil()",
+            "ssh://root@127.0.0.1",
+            "smb://10.0.0.1/share",
+            "https://example.com/\x00evil",
+            "https://example.com/\nevil",
+            f"file://{fifo_path}",
+            fifo_path,
+            self.tmp_dir,
+        ]
+
+        with patch.object(Gio.AppInfo, "launch_default_for_uri") as gio_mock, patch(
+            "webbrowser.open"
+        ) as wb_mock:
+            for link in dangerous_links:
+                viewer.open_hyperlink(link)
+            gio_mock.assert_not_called()
+            wb_mock.assert_not_called()
+            self.assertEqual(opened_files, [])
+
+            # Safe https:// link is allowed through
+            viewer.open_hyperlink("https://example.com/safe")
+            gio_mock.assert_called_once_with("https://example.com/safe", None)
+
+    def test_zip_bomb_and_xml_entity_expansion_protection_in_docx_odt(self):
+        import zipfile
+
+        # 1. Oversized XML member inside DOCX must be blocked by MAX_ZIP_XML_BYTES
+        bomb_docx = os.path.join(self.tmp_dir, "bomb.docx")
+        large_xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b'<w:body><w:p><w:r><w:t>' + (b"A" * 4096) + b'</w:t></w:r></w:p></w:body></w:document>'
+        )
+        with zipfile.ZipFile(bomb_docx, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("word/document.xml", large_xml)
+
+        orig_cap = DocumentParser.MAX_ZIP_XML_BYTES
+        try:
+            DocumentParser.MAX_ZIP_XML_BYTES = 1024
+            with self.assertRaises(ValueError):
+                DocumentParser._read_zip_member(bomb_docx, "word/document.xml")
+            out = DocumentParser.extract_docx_text(bomb_docx)
+            self.assertIn("Error reading DOCX document", out)
+        finally:
+            DocumentParser.MAX_ZIP_XML_BYTES = orig_cap
+
+        # 2. XML <!ENTITY (Billion Laughs / XXE) must be rejected
+        xxe_odt = os.path.join(self.tmp_dir, "entity_bomb.odt")
+        xxe_xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;">]>'
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
+            b'<office:body><office:text><p>&lol2;</p></office:text></office:body></office:document-content>'
+        )
+        with zipfile.ZipFile(xxe_odt, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("content.xml", xxe_xml)
+
+        with self.assertRaises(ValueError):
+            DocumentParser._parse_safe_xml(xxe_xml)
+        odt_res = DocumentParser.extract_odt_text(xxe_odt)
+        self.assertIn("XML entity declarations", odt_res)
+
+    def test_fifo_device_oversized_file_and_null_byte_rejection(self):
+        # 1. Named pipe (FIFO) must be rejected immediately without blocking
+        fifo_path = os.path.join(self.tmp_dir, "block.fifo")
+        os.mkfifo(fifo_path)
+        with self.assertRaises(ValueError):
+            DocumentParser.load_document_text(fifo_path)
+
+        # 2. Null byte and directory paths must be rejected
+        with self.assertRaises(ValueError):
+            DocumentParser.load_document_text(self.tmp_dir)
+        with self.assertRaises(ValueError):
+            DocumentParser.load_document_text(os.path.join(self.tmp_dir, "bad\x00.md"))
+
+        # 3. Oversized document exceeding MAX_DOCUMENT_BYTES must be rejected
+        big_md = os.path.join(self.tmp_dir, "huge.md")
+        with open(big_md, "wb") as f:
+            f.write(b"#" * 2048)
+
+        orig_max = DocumentParser.MAX_DOCUMENT_BYTES
+        try:
+            DocumentParser.MAX_DOCUMENT_BYTES = 1024
+            with self.assertRaises(ValueError):
+                DocumentParser.load_document_text(big_md)
+        finally:
+            DocumentParser.MAX_DOCUMENT_BYTES = orig_max
+
+    def test_viewer_css_injection_and_atomic_save_permission_preservation(self):
+        import stat
+        viewer = DocViewer()
+
+        # 1. CSS injection payload in font family must be sanitized
+        viewer.set_font_from_string('Monospace"; } * { background: red; } /* 14')
+        self.assertNotIn('"', viewer.base_font_family)
+        self.assertNotIn('{', viewer.base_font_family)
+        self.assertNotIn(';', viewer.base_font_family)
+
+        # 2. Saving onto a directory or null-byte path must raise cleanly
+        with self.assertRaises(IsADirectoryError):
+            viewer.save_file(self.tmp_dir)
+        with self.assertRaises(ValueError):
+            viewer.save_file(os.path.join(self.tmp_dir, "null\x00.md"))
+
+        # 3. Atomic save preserves file permissions (e.g., 0o644 rather than resetting to 0o600)
+        md_file = os.path.join(self.tmp_dir, "perms.md")
+        with open(md_file, "w", encoding="utf-8") as f:
+            f.write("# Initial\n")
+        os.chmod(md_file, 0o644)
+
+        viewer.load_file(md_file)
+        viewer.set_text("# Updated\n", undoable=False)
+        viewer.save_file(md_file)
+
+        saved_mode = stat.S_IMODE(os.stat(md_file).st_mode)
+        self.assertEqual(saved_mode, 0o644)
+
+
 if __name__ == "__main__":
     unittest.main()

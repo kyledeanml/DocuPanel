@@ -1146,8 +1146,8 @@ class DocuPanelWindow(Gtk.ApplicationWindow):
         """Launch companion PythonPanel IDE with the current file."""
         viewer = self.get_current_viewer()
         cmd = ["pythonpanel"]
-        if viewer and viewer.file_path:
-            cmd.append(viewer.file_path)
+        if viewer and viewer.file_path and "\x00" not in str(viewer.file_path):
+            cmd.append(os.path.abspath(viewer.file_path))
         try:
             import subprocess
             env = os.environ.copy()

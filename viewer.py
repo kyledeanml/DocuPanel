@@ -7,6 +7,7 @@ with the translucent DocuPanel watermark (darker-blue open book & document on an
 
 import os
 import re
+import stat
 import urllib.parse
 import tempfile
 import cairo
@@ -65,6 +66,7 @@ class DocViewer(Gtk.Box):
         1.10, 1.25, 1.40, 1.55, 1.75, 2.00, 2.25, 2.50, 3.00
     ]
     DEFAULT_ZOOM_INDEX = 5  # 100%
+    _FONT_SANITIZE_RE = re.compile(r'[^A-Za-z0-9 _.,+-]')
     _shared_css_provider = None
     _shared_light_css_provider = None
     _watermark_pixbuf = None
@@ -1280,25 +1282,38 @@ class DocViewer(Gtk.Box):
     # --------------------------------------------------------------------------
     def open_hyperlink(self, target_url: str):
         """Open web links in default system browser, or local files in a new DocuPanel tab."""
-        if not target_url:
+        if not target_url or not isinstance(target_url, str):
             return
-        target_str = str(target_url).strip()
+        target_str = target_url.strip()
+        if not target_str or any(ord(c) < 32 for c in target_str):
+            return
 
         # If it's a local file URL or file path
         parsed_path = None
-        if target_str.startswith("file://"):
+        low_url = target_str.lower()
+        if low_url.startswith("file://"):
             p = urllib.parse.urlparse(target_str).path
             parsed_path = urllib.parse.unquote(p)
         elif target_str.startswith(("/", "./", "../", "~/")):
             parsed_path = os.path.abspath(os.path.expanduser(target_str))
-        elif not (target_str.startswith("http://") or target_str.startswith("https://") or target_str.startswith("mailto:")):
+        elif not low_url.startswith(("http://", "https://", "mailto:")):
+            if ":" in target_str.split("/", 1)[0]:
+                # Block unsafe / non-web schemes such as javascript:, data:, vbscript:, ssh:, etc.
+                return
             if self.file_path:
                 candidate = os.path.abspath(os.path.join(os.path.dirname(self.file_path), target_str))
-                if os.path.exists(candidate):
+                if os.path.isfile(candidate):
                     parsed_path = candidate
 
-        if parsed_path and os.path.exists(parsed_path):
-            self.emit("open-file-requested", parsed_path)
+        if parsed_path:
+            try:
+                if os.path.isfile(parsed_path) and stat.S_ISREG(os.stat(parsed_path).st_mode):
+                    self.emit("open-file-requested", parsed_path)
+            except OSError:
+                pass
+            return
+
+        if not low_url.startswith(("http://", "https://", "mailto:")):
             return
 
         # Otherwise launch default web browser or application via Gio / webbrowser
@@ -1723,9 +1738,15 @@ class DocViewer(Gtk.Box):
         self.apply_retina_font()
         self.emit("zoom-changed", self.get_zoom_percent())
 
+    @classmethod
+    def _sanitize_font_family(cls, family: str) -> str:
+        cleaned = cls._FONT_SANITIZE_RE.sub("", str(family or "Monospace")).strip()
+        return cleaned or "Monospace"
+
     def apply_retina_font(self):
+        self.base_font_family = self._sanitize_font_family(self.base_font_family)
         scale = self.ZOOM_STEPS[self.zoom_index]
-        scaled_size_pt = max(6.0, self.base_font_size * scale)
+        scaled_size_pt = max(6.0, min(288.0, self.base_font_size * scale))
 
         font_desc = Pango.FontDescription()
         font_desc.set_family(self.base_font_family)
@@ -1761,13 +1782,13 @@ class DocViewer(Gtk.Box):
             self._update_pan_cursor(gripping=False)
 
     def set_font_from_string(self, font_str: str):
-        desc = Pango.FontDescription.from_string(font_str)
+        desc = Pango.FontDescription.from_string(str(font_str or "Monospace 11"))
         family = desc.get_family()
         size = desc.get_size() / Pango.SCALE
         if family:
-            self.base_font_family = family
+            self.base_font_family = self._sanitize_font_family(family)
         if size > 0:
-            self.base_font_size = size
+            self.base_font_size = max(6.0, min(96.0, float(size)))
         self.zoom_index = self.DEFAULT_ZOOM_INDEX
         self.apply_retina_font()
         self.emit("zoom-changed", self.get_zoom_percent())
@@ -1948,26 +1969,48 @@ class DocViewer(Gtk.Box):
 
     def save_file(self, path: str = None) -> bool:
         target_path = path or self.file_path
-        if not target_path:
-            raise ValueError("No file path specified to save.")
+        if not target_path or not isinstance(target_path, str) or "\x00" in target_path:
+            raise ValueError("No valid file path specified to save.")
 
         if self.doc_type in ("pdf", "odt", "docx") and target_path == self.file_path:
             raise ValueError(f"Use 'Save As' to export extracted {self.doc_type.upper()} text to a new file.")
 
         abs_target = os.path.abspath(target_path)
+        if os.path.isdir(abs_target):
+            raise IsADirectoryError(f"Cannot overwrite directory: {abs_target}")
+
         text = self.get_text()
         encoded_bytes = text.encode("utf-8")
 
         target_dir = os.path.dirname(abs_target) or "."
+        existing_mode = None
+        if os.path.exists(abs_target):
+            try:
+                existing_mode = stat.S_IMODE(os.stat(abs_target).st_mode) & 0o777
+            except OSError:
+                pass
+
         if os.access(target_dir, os.W_OK) and not os.path.islink(abs_target):
             fd, tmp_path = tempfile.mkstemp(prefix=".docupanel_save_", dir=target_dir)
+            fd_closed = False
             try:
                 with os.fdopen(fd, "wb") as f:
+                    fd_closed = True
                     f.write(encoded_bytes)
                     f.flush()
                     os.fsync(f.fileno())
+                if existing_mode is not None:
+                    try:
+                        os.chmod(tmp_path, existing_mode)
+                    except OSError:
+                        pass
                 os.replace(tmp_path, abs_target)
             except Exception:
+                if not fd_closed:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
                 if os.path.exists(tmp_path):
                     try:
                         os.remove(tmp_path)
