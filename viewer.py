@@ -7,6 +7,7 @@ with the translucent DocuPanel watermark (darker-blue open book & document on an
 
 import os
 import re
+import shutil
 import stat
 import urllib.parse
 import tempfile
@@ -1967,21 +1968,8 @@ class DocViewer(Gtk.Box):
         self.emit("outline-updated")
         return True
 
-    def save_file(self, path: str = None) -> bool:
-        target_path = path or self.file_path
-        if not target_path or not isinstance(target_path, str) or "\x00" in target_path:
-            raise ValueError("No valid file path specified to save.")
-
-        if self.doc_type in ("pdf", "odt", "docx") and target_path == self.file_path:
-            raise ValueError(f"Use 'Save As' to export extracted {self.doc_type.upper()} text to a new file.")
-
-        abs_target = os.path.abspath(target_path)
-        if os.path.isdir(abs_target):
-            raise IsADirectoryError(f"Cannot overwrite directory: {abs_target}")
-
-        text = self.get_text()
-        encoded_bytes = text.encode("utf-8")
-
+    def _write_atomic(self, abs_target: str, writer_fn):
+        """Write to abs_target atomically using a sibling temp file when possible."""
         target_dir = os.path.dirname(abs_target) or "."
         existing_mode = None
         if os.path.exists(abs_target):
@@ -1992,13 +1980,9 @@ class DocViewer(Gtk.Box):
 
         if os.access(target_dir, os.W_OK) and not os.path.islink(abs_target):
             fd, tmp_path = tempfile.mkstemp(prefix=".docupanel_save_", dir=target_dir)
-            fd_closed = False
+            os.close(fd)
             try:
-                with os.fdopen(fd, "wb") as f:
-                    fd_closed = True
-                    f.write(encoded_bytes)
-                    f.flush()
-                    os.fsync(f.fileno())
+                writer_fn(tmp_path)
                 if existing_mode is not None:
                     try:
                         os.chmod(tmp_path, existing_mode)
@@ -2006,11 +1990,6 @@ class DocViewer(Gtk.Box):
                         pass
                 os.replace(tmp_path, abs_target)
             except Exception:
-                if not fd_closed:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
                 if os.path.exists(tmp_path):
                     try:
                         os.remove(tmp_path)
@@ -2018,11 +1997,107 @@ class DocViewer(Gtk.Box):
                         pass
                 raise
         else:
-            with open(abs_target, "wb") as f:
+            writer_fn(abs_target)
+
+    def save_file(self, path: str = None) -> bool:
+        target_path = path or self.file_path
+        if not target_path or not isinstance(target_path, str) or "\x00" in target_path:
+            raise ValueError("No valid file path specified to save.")
+
+        abs_target = os.path.abspath(target_path)
+        if os.path.isdir(abs_target):
+            raise IsADirectoryError(f"Cannot overwrite directory: {abs_target}")
+
+        target_doc_type = DocumentParser.get_doc_type(abs_target)
+        src_path = os.path.abspath(self.file_path) if self.file_path else None
+        is_same_file = False
+        if src_path:
+            if os.path.exists(src_path) and os.path.exists(abs_target):
+                try:
+                    is_same_file = os.path.samefile(src_path, abs_target)
+                except OSError:
+                    is_same_file = (src_path == abs_target)
+            else:
+                is_same_file = (src_path == abs_target)
+
+        # Case 1: Saving an open binary document (PDF/ODT/DOCX) as the same binary format
+        if self.doc_type in ("pdf", "odt", "docx") and target_doc_type == self.doc_type:
+            if not is_same_file:
+                if not src_path or not os.path.isfile(src_path):
+                    raise FileNotFoundError(f"Original {self.doc_type.upper()} source file not found: {src_path}")
+
+                def _copy_binary(dest_path: str):
+                    with open(src_path, "rb") as src_f, open(dest_path, "wb") as dst_f:
+                        shutil.copyfileobj(src_f, dst_f, length=65536)
+                        dst_f.flush()
+                        os.fsync(dst_f.fileno())
+
+                self._write_atomic(abs_target, _copy_binary)
+                self.file_path = abs_target
+                if target_doc_type == "pdf" and self.pdf_renderer:
+                    self.pdf_renderer.load_pdf(abs_target)
+                    self.total_pdf_pages = self.pdf_renderer.page_count
+                    self.current_pdf_page = max(1, min(self.current_pdf_page, max(1, self.total_pdf_pages)))
+            self._is_modified = False
+            self.emit("content-modified", False)
+            self.emit("file-saved", self.file_path)
+            self.emit("outline-updated")
+            return True
+
+        # Case 2: Exporting a non-PDF document to .pdf (render a real binary PDF)
+        if target_doc_type == "pdf":
+            text = self.get_text()
+            source_doc_type = self.doc_type
+
+            def _export_pdf(dest_path: str):
+                DocumentParser.export_text_to_pdf(text, dest_path, doc_type=source_doc_type)
+
+            self._write_atomic(abs_target, _export_pdf)
+            self.file_path = abs_target
+            self.doc_type = "pdf"
+            self._is_modified = False
+            if self.pdf_renderer:
+                self.pdf_renderer.cleanup()
+            self.pdf_renderer = PDFPageRenderer(abs_target)
+            self.total_pdf_pages = self.pdf_renderer.page_count
+            self.current_pdf_page = 1
+            self.set_read_only(True)
+            self.set_view_mode("rendered")
+            self.set_syntax_from_filename(self.file_path)
+            self.emit("content-modified", False)
+            self.emit("file-saved", self.file_path)
+            self.emit("outline-updated")
+            return True
+
+        # Case 3: Prevent writing raw text into binary ODT/DOCX containers
+        if target_doc_type in ("odt", "docx"):
+            raise ValueError(
+                f"Exporting directly to .{target_doc_type} is not supported. "
+                "Save as .pdf, .html, .md, or .txt instead."
+            )
+
+        # Case 4: Standard UTF-8 text save (including exporting extracted text from PDF/ODT/DOCX)
+        text = self.get_text()
+        encoded_bytes = text.encode("utf-8")
+
+        def _write_text(dest_path: str):
+            with open(dest_path, "wb") as f:
                 f.write(encoded_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+
+        self._write_atomic(abs_target, _write_text)
+
+        if self.pdf_renderer:
+            self.pdf_renderer.cleanup()
+            self.pdf_renderer = None
+            self.total_pdf_pages = 0
+            self.current_pdf_page = 0
+        if self.doc_type in ("pdf", "odt", "docx"):
+            self.set_read_only(False)
 
         self.file_path = abs_target
-        self.doc_type = DocumentParser.get_doc_type(self.file_path)
+        self.doc_type = target_doc_type
         self._is_modified = False
         self.set_syntax_from_filename(self.file_path)
         self.emit("content-modified", False)

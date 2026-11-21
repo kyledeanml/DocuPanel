@@ -1175,6 +1175,109 @@ class DocumentParser:
         close_lists()
         return "\n".join(out)
 
+    @staticmethod
+    def export_text_to_pdf(text: str, out_path: str, doc_type: str = "text") -> None:
+        """Render text/markdown content into a valid multi-page binary PDF using Cairo and PangoCairo."""
+        gi.require_version('Pango', '1.0')
+        gi.require_version('PangoCairo', '1.0')
+        from gi.repository import Pango, PangoCairo
+
+        page_w = 612.0   # US Letter width in pt
+        page_h = 792.0   # US Letter height in pt
+        margin_x = 54.0
+        margin_top = 54.0
+        margin_bottom = 54.0
+        usable_w = page_w - (2.0 * margin_x)
+        max_y = page_h - margin_bottom
+
+        is_mono_doc = doc_type in ("json", "xml", "csv", "code")
+        body_font = Pango.FontDescription("Monospace 9.5" if is_mono_doc else "Sans 10.5")
+        mono_font = Pango.FontDescription("Monospace 9.0")
+        h1_font = Pango.FontDescription("Sans Bold 17")
+        h2_font = Pango.FontDescription("Sans Bold 14")
+        h3_font = Pango.FontDescription("Sans Bold 12")
+
+        surface = cairo.PDFSurface(out_path, page_w, page_h)
+        try:
+            cr = cairo.Context(surface)
+            cr.set_source_rgb(0.1, 0.1, 0.1)
+            y = margin_top
+            in_code = False
+
+            lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            if not lines:
+                lines = [""]
+
+            for raw_line in lines:
+                font = body_font
+                render_line = raw_line
+                extra_before = 0.0
+                extra_after = 2.0
+
+                if doc_type == "markdown":
+                    stripped = raw_line.strip()
+                    if stripped.startswith("```"):
+                        in_code = not in_code
+                        continue
+                    if in_code:
+                        font = mono_font
+                        extra_after = 1.0
+                    elif stripped.startswith("### "):
+                        font = h3_font
+                        render_line = stripped[4:].strip()
+                        extra_before = 6.0
+                        extra_after = 3.0
+                    elif stripped.startswith("## "):
+                        font = h2_font
+                        render_line = stripped[3:].strip()
+                        extra_before = 8.0
+                        extra_after = 4.0
+                    elif stripped.startswith("# "):
+                        font = h1_font
+                        render_line = stripped[2:].strip()
+                        extra_before = 10.0
+                        extra_after = 5.0
+
+                if extra_before and y > margin_top:
+                    y += extra_before
+
+                if render_line == "":
+                    blank_h = 10.0
+                    if y + blank_h > max_y:
+                        surface.show_page()
+                        y = margin_top
+                    else:
+                        y += blank_h
+                    continue
+
+                layout = PangoCairo.create_layout(cr)
+                layout.set_width(int(usable_w * Pango.SCALE))
+                layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                layout.set_font_description(font)
+                layout.set_text(render_line, -1)
+
+                it = layout.get_iter()
+                while True:
+                    pango_line = it.get_line_readonly()
+                    _, logical_rect = it.get_line_extents()
+                    line_h = max(logical_rect.height / Pango.SCALE, 12.0)
+                    if y + line_h > max_y and y > margin_top:
+                        surface.show_page()
+                        y = margin_top
+                    baseline = it.get_baseline() / Pango.SCALE
+                    line_y = logical_rect.y / Pango.SCALE
+                    cr.move_to(margin_x, y + (baseline - line_y))
+                    PangoCairo.show_layout_line(cr, pango_line)
+                    y += line_h
+                    if not it.next_line():
+                        break
+
+                y += extra_after
+
+            surface.show_page()
+        finally:
+            surface.finish()
+
 
 class PDFPageRenderer:
     """

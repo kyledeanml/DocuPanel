@@ -1507,6 +1507,85 @@ class TestSecurityAndIntegrityHardening(unittest.TestCase):
         saved_mode = stat.S_IMODE(os.stat(md_file).st_mode)
         self.assertEqual(saved_mode, 0o644)
 
+    def test_35_pdf_save_as_preserves_valid_pdf_and_exports_non_pdf(self):
+        """Saving an open PDF as .pdf preserves binary PDF; saving Markdown/text as .pdf exports a valid PDF."""
+        from viewer import DocViewer
+        from doc_tools import DocumentParser, PDFPageRenderer
+
+        # 1. Create a real multi-page PDF via export_text_to_pdf to use as source PDF
+        src_pdf = os.path.join(self.tmp_dir, "source.pdf")
+        long_md = "# DocuPanel Report\n\n" + "\n".join(
+            f"Paragraph {i}: The quick brown fox jumps over the lazy dog." for i in range(1, 90)
+        )
+        DocumentParser.export_text_to_pdf(long_md, src_pdf, doc_type="markdown")
+        with open(src_pdf, "rb") as f:
+            orig_bytes = f.read()
+        self.assertTrue(orig_bytes.startswith(b"%PDF-"))
+
+        src_renderer = PDFPageRenderer(src_pdf)
+        try:
+            self.assertGreaterEqual(src_renderer.page_count, 2)
+            orig_pages = src_renderer.page_count
+        finally:
+            src_renderer.cleanup()
+
+        # 2. Load the PDF in DocViewer and Save As a new .pdf -> must be byte-for-byte identical valid PDF
+        viewer = DocViewer()
+        try:
+            viewer.load_file(src_pdf)
+            self.assertEqual(viewer.doc_type, "pdf")
+
+            copy_pdf = os.path.join(self.tmp_dir, "copy.pdf")
+            self.assertTrue(viewer.save_file(copy_pdf))
+            with open(copy_pdf, "rb") as f:
+                copy_bytes = f.read()
+            self.assertEqual(copy_bytes, orig_bytes)
+            self.assertEqual(viewer.file_path, os.path.abspath(copy_pdf))
+            self.assertIsNotNone(viewer.pdf_renderer)
+            self.assertEqual(viewer.pdf_renderer.page_count, orig_pages)
+
+            # 3. Save As onto the same PDF path must not corrupt or truncate it
+            self.assertTrue(viewer.save_file(copy_pdf))
+            with open(copy_pdf, "rb") as f:
+                self.assertEqual(f.read(), orig_bytes)
+
+            # 4. Save As a .txt file exports extracted UTF-8 text and exits PDF read-only mode
+            exported_txt = os.path.join(self.tmp_dir, "extracted.txt")
+            self.assertTrue(viewer.save_file(exported_txt))
+            with open(exported_txt, "r", encoding="utf-8") as f:
+                txt_content = f.read()
+            self.assertIn("DocuPanel Report", txt_content)
+            self.assertEqual(viewer.doc_type, "text")
+            self.assertIsNone(viewer.pdf_renderer)
+            self.assertFalse(viewer.read_only)
+
+            # 5. Save As a non-PDF document (Markdown) to .pdf exports a real, readable PDF
+            md_path = os.path.join(self.tmp_dir, "notes.md")
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write("# Meeting Notes\n\n## Action Items\n\n- Verify PDF Save As works cleanly\n")
+            viewer.load_file(md_path)
+            self.assertEqual(viewer.doc_type, "markdown")
+
+            out_pdf = os.path.join(self.tmp_dir, "notes_export.pdf")
+            self.assertTrue(viewer.save_file(out_pdf))
+            with open(out_pdf, "rb") as f:
+                exported_bytes = f.read()
+            self.assertTrue(exported_bytes.startswith(b"%PDF-"))
+            self.assertEqual(viewer.doc_type, "pdf")
+            self.assertIsNotNone(viewer.pdf_renderer)
+            self.assertGreaterEqual(viewer.pdf_renderer.page_count, 1)
+
+            extracted_from_export, _, _ = DocumentParser.load_document_text(out_pdf)
+            self.assertIn("Meeting Notes", extracted_from_export)
+
+            # 6. Trying to save a text/markdown document directly as .docx must raise ValueError
+            viewer.load_file(md_path)
+            with self.assertRaises(ValueError):
+                viewer.save_file(os.path.join(self.tmp_dir, "bad.docx"))
+        finally:
+            if viewer.pdf_renderer:
+                viewer.pdf_renderer.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
